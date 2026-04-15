@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* KPMG Primary */
+  --kpmg-blue: #00338D;
+  --kpmg-blue-dark: #002266;
+  --kpmg-blue-light: #0056A0;
+
+  /* KPMG Secondary */
+  --kpmg-purple: #483698;
+  --kpmg-teal: #009A9A;
+  --kpmg-green: #009A44;
+
+  /* Neutrals */
+  --kpmg-dark: #1D1D1B;
+  --kpmg-gray-700: #333333;
+  --kpmg-gray-500: #666666;
+  --kpmg-gray-300: #CCCCCC;
+  --kpmg-gray-100: #F5F5F5;
+  --kpmg-white: #FFFFFF;
+
+  /* Source authority colors */
+  --color-sama: #00338D;
+  --color-cma: #483698;
+  --color-bank: #009A44;
+
+  /* Status */
+  --color-success: #009A44;
+  --color-warning: #F5A623;
+  --color-error: #D0021B;
+}
+
+/* RTL support */
+[dir="rtl"] {
+  font-family: "IBM Plex Sans Arabic", "Noto Sans Arabic", "Inter", sans-serif;
+}
+
+[dir="rtl"] input,
+[dir="rtl"] textarea {
+  text-align: right;
+}
+
+/* Smooth transitions for language switch */
+html {
+  transition: direction 0.2s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--kpmg-gray-100);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--kpmg-gray-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--kpmg-gray-500);
+}
+
+/* Source badge styles */
+@layer components {
+  .badge-sama {
+    @apply bg-sama/10 text-sama border border-sama/20;
+  }
+
+  .badge-cma {
+    @apply bg-cma/10 text-cma border border-cma/20;
+  }
+
+  .badge-bank {
+    @apply bg-bank/10 text-bank border border-bank/20;
+  }
+}

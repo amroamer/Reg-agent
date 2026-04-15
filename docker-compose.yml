@@ -1,0 +1,160 @@
+services:
+
+  # --- Relational DB for metadata & cross-references ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: ri-postgres
+    restart: unless-stopped
+    networks:
+      - ri-network
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reginspector} -d ${POSTGRES_DB:-reginspector}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # --- Cache & Celery broker ---
+  redis:
+    image: redis:7-alpine
+    container_name: ri-redis
+    restart: unless-stopped
+    networks:
+      - ri-network
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # --- Vector Database ---
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ri-qdrant
+    restart: unless-stopped
+    networks:
+      - ri-network
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # --- Local LLM (optional — for air-gapped deployments) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ri-ollama
+    restart: unless-stopped
+    networks:
+      - ri-network
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  # --- Backend API ---
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ri-backend
+    restart: unless-stopped
+    networks:
+      - ri-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./documents:/app/documents
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  # --- Document Ingestion Worker (Celery) ---
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ri-worker
+    command: celery -A worker.celery_app worker --loglevel=info --queues=ingestion --concurrency=2
+    restart: unless-stopped
+    networks:
+      - ri-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./documents:/app/documents
+      - uploads_data:/app/uploads
+
+  # --- Frontend ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ri-frontend
+    restart: unless-stopped
+    networks:
+      - ri-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - NEXT_PUBLIC_API_URL=/api
+
+  # --- Reverse Proxy ---
+  nginx:
+    image: nginx:alpine
+    container_name: ri-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - ri-network
+    depends_on:
+      - frontend
+      - backend
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  ollama_data:
+  uploads_data:
+
+networks:
+  ri-network:
+    driver: bridge
