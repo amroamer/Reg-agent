@@ -1,0 +1,144 @@
+// ── Auth ──────────────────────────────────────────
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "analyst" | "viewer";
+  preferred_language: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+// ── Documents ────────────────────────────────────
+
+export type SourceAuthority = "SAMA" | "CMA" | "BANK_POLICY";
+export type DocumentStatus =
+  | "pending"
+  | "processing"
+  | "indexed"
+  | "failed"
+  | "superseded";
+
+export interface Document {
+  id: string;
+  title_en: string | null;
+  title_ar: string | null;
+  source: SourceAuthority;
+  document_number: string | null;
+  issue_date: string | null;
+  effective_date: string | null;
+  status: DocumentStatus;
+  language: string | null;
+  file_path: string;
+  source_url: string | null;
+  page_count: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Chunk {
+  id: string;
+  chunk_index: number;
+  content_en: string | null;
+  content_ar: string | null;
+  section_title: string | null;
+  article_number: string | null;
+  page_number: number | null;
+  token_count: number | null;
+}
+
+export interface DocumentDetail extends Document {
+  chunks: Chunk[];
+  chunks_count: number;
+}
+
+export interface DocumentListResponse {
+  documents: Document[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+// ── Search ───────────────────────────────────────
+
+export interface SearchRequest {
+  query: string;
+  sources?: string[];
+  language?: string;
+  top_k?: number;
+  generate_answer?: boolean;
+}
+
+export interface SearchResultItem {
+  chunk_id: string | null;
+  document_id: string | null;
+  score: number;
+  article_number: string | null;
+  section_title: string | null;
+  page_number: number | null;
+  content_en: string | null;
+  content_ar: string | null;
+  document_title_en: string | null;
+  document_title_ar: string | null;
+  document_number: string | null;
+  source: string | null;
+  source_url: string | null;
+  issue_date: string | null;
+}
+
+export interface LLMAnswer {
+  text: string;
+  language: string;
+  citations: Record<string, unknown>[];
+  confidence: string;
+}
+
+export interface RegulationResult {
+  document_title: string | null;
+  document_number: string | null;
+  article: string | null;
+  relevant_text: string | null;
+  source_url: string | null;
+  confidence: number;
+}
+
+export interface CrossReferenceResult {
+  from_document: string | null;
+  to_document: string | null;
+  relationship: string | null;
+  explanation: string | null;
+}
+
+export interface SearchResponse {
+  answer: LLMAnswer | null;
+  results: SearchResultItem[];
+  sama_regulations: RegulationResult[];
+  cma_regulations: RegulationResult[];
+  bank_policies: RegulationResult[];
+  cross_references: CrossReferenceResult[];
+  metadata: {
+    query_language?: string;
+    total_candidates?: number;
+    response_time_ms?: number;
+    from_cache?: boolean;
+  };
+}
+
+// ── Admin ────────────────────────────────────────
+
+export interface AdminStats {
+  total_documents: number;
+  documents_by_source: Record<string, number>;
+  documents_by_status: Record<string, number>;
+  total_chunks: number;
+  total_searches: number;
+  pending_cross_refs: number;
+}
