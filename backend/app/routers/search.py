@@ -8,7 +8,7 @@ from app.database import get_db
 from app.models.search_log import SearchLog
 from app.models.user import User
 from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_optional_user
 from app.services.search_service import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 async def search(
     body: SearchRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """Execute a hybrid search across all regulatory documents."""
     start = time.time()
@@ -68,7 +68,7 @@ async def search(
         filters={"sources": body.sources},
         results_count=len(results),
         response_time_ms=elapsed_ms,
-        user_id=user.id,
+        user_id=user.id if user else None,
     )
     db.add(log)
 

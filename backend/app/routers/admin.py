@@ -17,7 +17,7 @@ from app.schemas.admin import (
     CrossReferenceVerifyRequest,
     SearchLogEntry,
 )
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, get_optional_user, require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 @router.get("/stats", response_model=AdminStatsResponse)
 async def get_stats(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """Get dashboard statistics."""
     # Total documents
@@ -86,7 +86,7 @@ async def list_cross_references(
     verified: bool | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """List cross-references with optional filter."""
     query = select(CrossReference)

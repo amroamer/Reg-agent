@@ -106,6 +106,26 @@ async def get_current_user(
     return user
 
 
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Like get_current_user but returns None instead of 401 if not authenticated."""
+    if credentials is None:
+        return None
+    try:
+        user_id = decode_token(credentials.credentials, expected_type="access")
+        result = await db.execute(
+            select(User).where(User.id == uuid.UUID(user_id))
+        )
+        user = result.scalar_one_or_none()
+        if user and user.is_active:
+            return user
+    except Exception:
+        pass
+    return None
+
+
 async def require_admin(
     user: User = Depends(get_current_user),
 ) -> User:

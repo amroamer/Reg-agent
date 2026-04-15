@@ -112,7 +112,7 @@ async def _bm25_search(
         ) @@ (
             plainto_tsquery('english', :query) || plainto_tsquery('simple', :query)
         )
-        AND d.status = 'indexed'
+        AND d.status = 'INDEXED'
         AND (:has_source_filter = false OR d.source = ANY(:sources))
         ORDER BY rank DESC
         LIMIT :limit

@@ -18,7 +18,7 @@ from app.schemas.document import (
     DocumentListResponse,
     DocumentResponse,
 )
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, get_optional_user, require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -116,7 +116,7 @@ async def list_documents(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """List all documents with optional filters."""
     query = select(Document)
@@ -149,7 +149,7 @@ async def list_documents(
 async def get_document(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """Get document detail with its chunks."""
     result = await db.execute(

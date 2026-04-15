@@ -6,6 +6,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchAny,
     MatchValue,
     PayloadSchemaType,
@@ -100,12 +101,12 @@ def search_vectors(
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
-    results = client.search(
+    results = client.query_points(
         collection_name=settings.QDRANT_COLLECTION,
-        query_vector=query_vector,
+        query=query_vector,
         query_filter=query_filter,
         limit=limit,
-    )
+    ).points
 
     return [
         {
@@ -122,13 +123,15 @@ def delete_by_document_id(document_id: str) -> None:
     client = get_qdrant_client()
     client.delete(
         collection_name=settings.QDRANT_COLLECTION,
-        points_selector=Filter(
-            must=[
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(value=document_id),
-                )
-            ]
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id),
+                    )
+                ]
+            )
         ),
     )
     logger.info("Deleted vectors for document: %s", document_id)

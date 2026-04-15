@@ -2,7 +2,27 @@
   "permissions": {
     "allow": [
       "Bash(git init:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit -m ':*)",
+      "Bash(docker info:*)",
+      "Bash(psql -U postgres -h localhost -c \"SELECT 1\")",
+      "Bash(curl -sf http://localhost:6335/healthz)",
+      "Bash(python -m venv .venv)",
+      "Bash(curl -sf http://localhost:8000/api/health)",
+      "Bash(taskkill //F //PID 8436)",
+      "Bash(taskkill //F //PID 8456)",
+      "Bash(taskkill //F //PID 30188)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(list\\(d['paths'].keys\\(\\)\\), indent=2\\)\\)\")",
+      "Bash(taskkill //F //PID 12328)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -s http://localhost:3000/api/health)",
+      "Bash(curl -s -X POST http://localhost:8001/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@reginspector.local\",\"password\":\"admin123!@#\"}')",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(tasklist)",
+      "Bash(taskkill //F //PID 33020)",
+      "Bash(curl -s -X POST http://localhost:8001/api/search -H \"Content-Type: application/json\" -d '{\"query\":\"test\",\"generate_answer\":false}')",
+      "Bash(curl -s -X POST http://localhost:3000/api/search -H \"Content-Type: application/json\" -d '{\"query\":\"credit cards\",\"generate_answer\":false}')"
     ]
   }
 }

@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     class Config:
-        env_file = ".env"
+        env_file = "../.env", ".env"
         extra = "ignore"
 
 
