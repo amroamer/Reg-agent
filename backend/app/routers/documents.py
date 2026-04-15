@@ -23,7 +23,10 @@ from app.services.auth_service import get_current_user, get_optional_user, requi
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
-UPLOAD_DIR = "/app/uploads"
+import pathlib
+
+# Use /app/uploads in Docker, ./uploads locally
+UPLOAD_DIR = "/app/uploads" if pathlib.Path("/app/uploads").exists() else str(pathlib.Path(__file__).resolve().parent.parent.parent / "uploads")
 ALLOWED_EXTENSIONS = {".pdf"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
@@ -36,7 +39,7 @@ async def upload_document(
     title_ar: str | None = Form(None),
     document_number: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ):
     """Upload a new regulation/policy PDF for ingestion."""
     # Validate file type
@@ -91,20 +94,30 @@ async def upload_document(
         status=DocumentStatus.PENDING,
         file_path=file_path,
         file_hash=file_hash,
-        uploaded_by=user.id,
+        uploaded_by=user.id if user else None,
     )
     db.add(doc)
     await db.flush()
 
-    # Dispatch Celery ingestion task
+    # Dispatch ingestion: try Celery first, fall back to sync in background thread
     try:
         from worker.tasks.ingest import ingest_document
 
         ingest_document.delay(str(doc_id))
-        logger.info("Dispatched ingestion task for document: %s", doc_id)
+        logger.info("Dispatched Celery ingestion task for document: %s", doc_id)
     except Exception as e:
-        logger.warning("Failed to dispatch ingestion task: %s", e)
-        doc.error_message = f"Task dispatch failed: {e}"
+        logger.warning("Celery unavailable (%s), running ingestion in background thread", e)
+        import threading
+
+        def _run_sync_ingest(did: str):
+            try:
+                from worker.tasks.ingest import ingest_document as _ingest
+                _ingest(did)
+            except Exception as ex:
+                logger.error("Background ingestion failed for %s: %s", did, ex)
+
+        t = threading.Thread(target=_run_sync_ingest, args=(str(doc_id),), daemon=True)
+        t.start()
 
     return doc
 
