@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import auth, documents, health, search
+from app.routers import admin, auth, documents, health, search
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -98,3 +98,4 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(search.router)
+app.include_router(admin.router)
