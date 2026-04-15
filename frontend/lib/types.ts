@@ -142,3 +142,80 @@ export interface AdminStats {
   total_searches: number;
   pending_cross_refs: number;
 }
+
+// ── Batch Upload ─────────────────────────────────
+
+export type BatchStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type QueueItemStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "skipped";
+export type IngestionStage =
+  | "extraction"
+  | "parsing"
+  | "markdown"
+  | "chunking"
+  | "embedding"
+  | "enrichment";
+
+export interface StageProgress {
+  [stage: string]: { status: string; duration_s?: number };
+}
+
+export interface QueueItem {
+  id: string;
+  document_id: string;
+  filename: string | null;
+  source: string | null;
+  position: number;
+  status: QueueItemStatus;
+  current_stage: IngestionStage | null;
+  stage_progress: StageProgress;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BatchSummary {
+  id: string;
+  name: string | null;
+  status: BatchStatus;
+  total_documents: number;
+  completed_documents: number;
+  failed_documents: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BatchDetail extends BatchSummary {
+  queue_items: QueueItem[];
+}
+
+export interface BulkUploadDocumentInfo {
+  document_id: string;
+  filename: string;
+  source: string;
+  document_number: string | null;
+  queue_position: number;
+  status: string;
+  metadata_source: string;
+  warnings: string[];
+}
+
+export interface BulkUploadResponse {
+  batch_id: string;
+  batch_name: string | null;
+  total_documents: number;
+  accepted: number;
+  duplicates: string[];
+  errors: string[];
+  documents: BulkUploadDocumentInfo[];
+  csv_warnings: string[];
+}

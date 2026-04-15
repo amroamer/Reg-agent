@@ -6,6 +6,7 @@ from app.models.cross_reference import CrossReference
 from app.models.topic import Topic, document_topics
 from app.models.search_log import SearchLog
 from app.models.ingestion_error import IngestionError
+from app.models.ingestion_batch import IngestionBatch, IngestionQueue, BatchStatus, QueueItemStatus
 
 __all__ = [
     "User",
@@ -21,4 +22,8 @@ __all__ = [
     "document_topics",
     "SearchLog",
     "IngestionError",
+    "IngestionBatch",
+    "IngestionQueue",
+    "BatchStatus",
+    "QueueItemStatus",
 ]

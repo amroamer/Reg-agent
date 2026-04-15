@@ -84,6 +84,12 @@ const en = {
   reject: "Reject",
   viewAll: "View All",
   back: "Back",
+
+  // Bulk Upload
+  bulkUpload: "Bulk Upload",
+  batchName: "Batch Name",
+  defaultSource: "Default Source",
+  retryFailed: "Retry Failed",
 } as const;
 
 export default en;

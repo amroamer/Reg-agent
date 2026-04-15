@@ -5,6 +5,7 @@ import clsx from "clsx";
 import {
   BarChart3,
   FileText,
+  Files,
   GitCompareArrows,
   LayoutDashboard,
   Search,
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
 const ADMIN_ITEMS = [
   { href: "/admin", icon: LayoutDashboard, labelKey: "dashboard" as const },
   { href: "/admin/documents", icon: Upload, labelKey: "uploadDocument" as const },
+  { href: "/admin/bulk-upload", icon: Files, labelKey: "bulkUpload" as const },
   {
     href: "/admin/cross-references",
     icon: GitCompareArrows,

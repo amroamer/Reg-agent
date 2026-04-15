@@ -84,6 +84,12 @@ const ar = {
   reject: "رفض",
   viewAll: "عرض الكل",
   back: "رجوع",
+
+  // Bulk Upload
+  bulkUpload: "رفع مجمّع",
+  batchName: "اسم الدفعة",
+  defaultSource: "المصدر الافتراضي",
+  retryFailed: "إعادة المحاولة للفاشلة",
 } as const;
 
 export default ar;

@@ -49,10 +49,53 @@ _chunker = ArticleChunker()
 
 
 @app.task(bind=True, name="worker.tasks.ingest.ingest_document", max_retries=3)
-def ingest_document(self, document_id: str):
+def ingest_document(self, document_id: str, queue_item_id: str | None = None, batch_id: str | None = None):
     """6-stage ingestion pipeline: Extract → Parse → Markdown → Chunk → Embed → Enrich."""
     start_time = time.time()
     logger.info("[%s] Starting 6-stage ingestion...", document_id[:8])
+
+    def _emit_stage(stage: str, session=None):
+        """Update queue item and emit SSE event when entering a new stage."""
+        if queue_item_id and session:
+            try:
+                from app.models.ingestion_batch import IngestionQueue
+                qi = session.execute(
+                    select(IngestionQueue).where(IngestionQueue.id == uuid.UUID(queue_item_id))
+                ).scalar_one_or_none()
+                if qi:
+                    qi.current_stage = stage
+                    prog = qi.stage_progress or {}
+                    prog[stage] = {"status": "processing"}
+                    qi.stage_progress = prog
+                    session.commit()
+            except Exception:
+                pass
+        if batch_id:
+            try:
+                from app.services.sse_emitter import sync_publish
+                sync_publish(batch_id, "stage_changed", {
+                    "document_id": document_id,
+                    "queue_item_id": queue_item_id,
+                    "stage": stage,
+                })
+            except Exception:
+                pass
+
+    def _complete_stage(stage: str, duration: float, session=None):
+        """Mark a stage as completed in the queue item."""
+        if queue_item_id and session:
+            try:
+                from app.models.ingestion_batch import IngestionQueue
+                qi = session.execute(
+                    select(IngestionQueue).where(IngestionQueue.id == uuid.UUID(queue_item_id))
+                ).scalar_one_or_none()
+                if qi:
+                    prog = qi.stage_progress or {}
+                    prog[stage] = {"status": "completed", "duration_s": round(duration, 1)}
+                    qi.stage_progress = prog
+                    session.commit()
+            except Exception:
+                pass
 
     session = _get_sync_session()
     try:
@@ -91,6 +134,7 @@ def ingest_document(self, document_id: str):
         }
 
         # ══════════ STAGE 1: PDF EXTRACTION ══════════
+        _emit_stage("extraction", session)
         logger.info("[%s] Stage 1: Extracting PDF...", document_id[:8])
         try:
             extraction = _extractor.extract(file_path)
@@ -102,10 +146,12 @@ def ingest_document(self, document_id: str):
         doc.language = extraction["language"]
         session.commit()
         s1_time = time.time() - start_time
+        _complete_stage("extraction", s1_time, session)
         logger.info("[%s] Stage 1 done: %d pages via %s (%.1fs)", document_id[:8], extraction["total_pages"], extraction["method"], s1_time)
 
         # ══════════ STAGE 2: STRUCTURAL PARSING ══════════
         s2_start = time.time()
+        _emit_stage("parsing", session)
         logger.info("[%s] Stage 2: Parsing structure...", document_id[:8])
         try:
             document_json = _parser.parse(extraction, doc_meta)
@@ -127,10 +173,12 @@ def ingest_document(self, document_id: str):
                 article["article_id_in_db"] = article_db_ids[i]
 
         s2_time = time.time() - s2_start
+        _complete_stage("parsing", s2_time, session)
         logger.info("[%s] Stage 2 done: %d articles (%.1fs)", document_id[:8], len(document_json["articles"]), s2_time)
 
         # ══════════ STAGE 3: MARKDOWN GENERATION ══════════
         s3_start = time.time()
+        _emit_stage("markdown", session)
         logger.info("[%s] Stage 3: Generating Markdown...", document_id[:8])
         try:
             markdown = _md_generator.generate(document_json)
@@ -143,10 +191,12 @@ def ingest_document(self, document_id: str):
             logger.warning("[%s] Markdown generation failed: %s", document_id[:8], e)
 
         s3_time = time.time() - s3_start
+        _complete_stage("markdown", s3_time, session)
         logger.info("[%s] Stage 3 done (%.1fs)", document_id[:8], s3_time)
 
         # ══════════ STAGE 4: CHUNKING ══════════
         s4_start = time.time()
+        _emit_stage("chunking", session)
         logger.info("[%s] Stage 4: Chunking articles...", document_id[:8])
         try:
             chunks = _chunker.chunk_document(document_json)
@@ -155,10 +205,12 @@ def ingest_document(self, document_id: str):
             raise
 
         s4_time = time.time() - s4_start
+        _complete_stage("chunking", s4_time, session)
         logger.info("[%s] Stage 4 done: %d chunks (%.1fs)", document_id[:8], len(chunks), s4_time)
 
         # ══════════ STAGE 5: EMBEDDING & STORAGE ══════════
         s5_start = time.time()
+        _emit_stage("embedding", session)
         logger.info("[%s] Stage 5: Embedding %d chunks...", document_id[:8], len(chunks))
         try:
             chunks = embed_and_store_chunks(
@@ -175,10 +227,12 @@ def ingest_document(self, document_id: str):
         _insert_chunks(session, doc, chunks, extraction["language"], article_db_ids)
 
         s5_time = time.time() - s5_start
+        _complete_stage("embedding", s5_time, session)
         logger.info("[%s] Stage 5 done: %d vectors stored (%.1fs)", document_id[:8], len(chunks), s5_time)
 
         # ══════════ STAGE 6: ENRICHMENT ══════════
         s6_start = time.time()
+        _emit_stage("enrichment", session)
         logger.info("[%s] Stage 6: Enrichment...", document_id[:8])
         try:
             enrichment = EnrichmentService(session)
@@ -188,6 +242,7 @@ def ingest_document(self, document_id: str):
             logger.warning("[%s] Enrichment failed (non-fatal): %s", document_id[:8], e)
 
         s6_time = time.time() - s6_start
+        _complete_stage("enrichment", s6_time, session)
         logger.info("[%s] Stage 6 done (%.1fs)", document_id[:8], s6_time)
 
         # ══════════ COMPLETE ══════════

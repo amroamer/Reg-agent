@@ -122,6 +122,181 @@ async def upload_document(
     return doc
 
 
+@router.post("/bulk-upload")
+async def bulk_upload(
+    files: list[UploadFile] = File(...),
+    metadata_file: UploadFile | None = File(None),
+    default_source: SourceAuthority = Form(SourceAuthority.SAMA),
+    batch_name: str | None = Form(None),
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Upload multiple PDF documents with optional CSV/JSON metadata."""
+    from app.models.ingestion_batch import IngestionBatch, IngestionQueue
+    from app.schemas.batch import BulkUploadDocumentInfo, BulkUploadResponse
+    from app.services.metadata_parser import (
+        detect_source_from_filename,
+        extract_doc_number,
+        parse_csv_metadata,
+        parse_json_metadata,
+    )
+
+    if len(files) > 50:
+        raise HTTPException(400, "Maximum 50 files per upload")
+    if not files:
+        raise HTTPException(400, "No files provided")
+
+    # Parse metadata file if provided
+    metadata_map: dict[str, dict] = {}
+    csv_warnings: list[str] = []
+
+    if metadata_file:
+        content = await metadata_file.read()
+        fname = (metadata_file.filename or "").lower()
+        if fname.endswith(".csv"):
+            metadata_map, csv_warnings = parse_csv_metadata(content)
+        elif fname.endswith(".json"):
+            metadata_map, csv_warnings = parse_json_metadata(content)
+        else:
+            csv_warnings.append("Metadata file must be .csv or .json")
+
+    # Create batch
+    batch = IngestionBatch(
+        name=batch_name,
+        total_documents=0,
+        uploaded_by=user.id if user else None,
+    )
+    db.add(batch)
+    await db.flush()
+
+    documents_info: list[BulkUploadDocumentInfo] = []
+    duplicates: list[str] = []
+    errors: list[str] = []
+    position = 0
+
+    for upload_file in files:
+        filename = upload_file.filename or "unknown.pdf"
+
+        # Validate PDF
+        if not filename.lower().endswith(".pdf"):
+            errors.append(f"{filename}: not a PDF")
+            continue
+
+        content = await upload_file.read()
+
+        # Check magic bytes
+        if not content[:4] == b"%PDF":
+            errors.append(f"{filename}: invalid PDF (bad magic bytes)")
+            continue
+
+        if len(content) > MAX_FILE_SIZE:
+            errors.append(f"{filename}: exceeds 50MB limit")
+            continue
+
+        # Compute hash and check duplicates
+        import hashlib
+        file_hash = hashlib.sha256(content).hexdigest()
+        result = await db.execute(
+            select(Document).where(Document.file_hash == file_hash)
+        )
+        if result.scalar_one_or_none():
+            duplicates.append(filename)
+            continue
+
+        # Resolve metadata
+        meta = metadata_map.get(filename.lower(), {})
+        metadata_source = "csv" if filename.lower() in metadata_map else "auto_detected"
+
+        source_str = meta.get("source") or detect_source_from_filename(filename) or default_source.value
+        source = SourceAuthority(source_str)
+        doc_number = meta.get("document_number") or extract_doc_number(filename)
+
+        # Save file
+        doc_id = uuid.uuid4()
+        source_dir = os.path.join(UPLOAD_DIR, source.value.lower())
+        os.makedirs(source_dir, exist_ok=True)
+        file_path = os.path.join(source_dir, f"{doc_id}.pdf")
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        # Create document
+        doc = Document(
+            id=doc_id,
+            title_en=meta.get("title_en") or filename,
+            title_ar=meta.get("title_ar"),
+            source=source,
+            document_number=doc_number,
+            status=DocumentStatus.PENDING,
+            file_path=file_path,
+            file_hash=file_hash,
+            source_url=meta.get("source_url"),
+            batch_id=batch.id,
+            uploaded_by=user.id if user else None,
+        )
+        db.add(doc)
+        await db.flush()
+
+        # Create queue entry
+        position += 1
+        queue_item = IngestionQueue(
+            batch_id=batch.id,
+            document_id=doc_id,
+            position=position,
+        )
+        db.add(queue_item)
+
+        documents_info.append(BulkUploadDocumentInfo(
+            document_id=str(doc_id),
+            filename=filename,
+            source=source.value,
+            document_number=doc_number,
+            queue_position=position,
+            status="queued",
+            metadata_source=metadata_source,
+            warnings=[],
+        ))
+
+    # Update batch total
+    batch.total_documents = position
+    await db.flush()
+
+    # Check for CSV rows that didn't match any uploaded file
+    uploaded_lower = {(f.filename or "").lower() for f in files}
+    for csv_fn in metadata_map:
+        if csv_fn not in uploaded_lower:
+            csv_warnings.append(f"CSV row for '{csv_fn}' has no matching uploaded file — skipped")
+
+    # Dispatch batch processing
+    if position > 0:
+        try:
+            from worker.tasks.batch import process_batch
+            process_batch.delay(str(batch.id))
+            logger.info("Dispatched batch %s with %d documents", batch.id, position)
+        except Exception as e:
+            logger.warning("Celery unavailable (%s), running batch in background", e)
+            import threading
+
+            def _run(bid: str):
+                try:
+                    from worker.tasks.batch import process_batch as _pb
+                    _pb(bid)
+                except Exception as ex:
+                    logger.error("Background batch failed: %s", ex)
+
+            threading.Thread(target=_run, args=(str(batch.id),), daemon=True).start()
+
+    return BulkUploadResponse(
+        batch_id=str(batch.id),
+        batch_name=batch_name,
+        total_documents=position,
+        accepted=position,
+        duplicates=duplicates,
+        errors=errors,
+        documents=documents_info,
+        csv_warnings=csv_warnings,
+    )
+
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
     source: SourceAuthority | None = Query(None),

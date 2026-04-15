@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Date, DateTime, Enum, Integer, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -75,6 +75,12 @@ class Document(Base):
     metadata_extra: Mapped[dict | None] = mapped_column(
         JSONB, default=dict
     )
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingestion_batches.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     error_message: Mapped[str | None] = mapped_column(Text)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -88,5 +94,6 @@ class Document(Base):
     )
 
     # Relationships
+    batch = relationship("IngestionBatch", back_populates="documents")
     articles = relationship("Article", back_populates="document", cascade="all, delete-orphan")
     chunks = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
