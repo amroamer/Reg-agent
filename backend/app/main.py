@@ -93,6 +93,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting
+from app.middleware.rate_limit import RateLimitMiddleware
+
+app.add_middleware(RateLimitMiddleware)
+
 # Routers
 app.include_router(health.router)
 app.include_router(auth.router)
