@@ -24,7 +24,10 @@
       "Bash(curl -s -X POST http://localhost:8001/api/search -H \"Content-Type: application/json\" -d '{\"query\":\"test\",\"generate_answer\":false}')",
       "Bash(curl -s -X POST http://localhost:3000/api/search -H \"Content-Type: application/json\" -d '{\"query\":\"credit cards\",\"generate_answer\":false}')",
       "Bash(curl -s http://localhost:8001/openapi.json)",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\([p for p in sorted\\(d['paths'].keys\\(\\)\\) if 'batch' in p or 'bulk' in p], indent=2\\)\\)\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\([p for p in sorted\\(d['paths'].keys\\(\\)\\) if 'batch' in p or 'bulk' in p], indent=2\\)\\)\")",
+      "Bash(git remote:*)",
+      "Bash(git branch:*)",
+      "Bash(gh auth:*)"
     ]
   }
 }

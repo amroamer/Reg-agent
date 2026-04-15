@@ -65,5 +65,11 @@ coverage.xml
 # Logs
 *.log
 
+# Database backups
+backups/
+
+# Production secrets
+.env.production
+
 # Sentence transformers model cache
 .cache/
