@@ -14,14 +14,22 @@ class Chunk(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    article_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("articles.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
     document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("documents.id", ondelete="CASCADE"),
         index=True,
     )
     chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str | None] = mapped_column(Text)
     content_en: Mapped[str | None] = mapped_column(Text)
     content_ar: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(String(5))
     section_title: Mapped[str | None] = mapped_column(String(500))
     article_number: Mapped[str | None] = mapped_column(String(50))
     page_number: Mapped[int | None] = mapped_column(Integer)
@@ -35,5 +43,10 @@ class Chunk(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
+    # Denormalized for retrieval speed
+    source: Mapped[str | None] = mapped_column(String(20))
+    document_number: Mapped[str | None] = mapped_column(String(100))
+
     # Relationships
+    article = relationship("Article", back_populates="chunks")
     document = relationship("Document", back_populates="chunks")

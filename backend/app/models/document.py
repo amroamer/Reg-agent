@@ -60,6 +60,18 @@ class Document(Base):
     )
     source_url: Mapped[str | None] = mapped_column(String(1000))
     page_count: Mapped[int | None] = mapped_column(Integer)
+
+    # Three-format file paths
+    json_path: Mapped[str | None] = mapped_column(String(1000))
+    markdown_path: Mapped[str | None] = mapped_column(String(1000))
+
+    total_articles: Mapped[int | None] = mapped_column(Integer)
+    total_chunks: Mapped[int | None] = mapped_column(Integer, default=0)
+
+    # Ingestion tracking
+    ingestion_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ingestion_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     metadata_extra: Mapped[dict | None] = mapped_column(
         JSONB, default=dict
     )
@@ -76,4 +88,5 @@ class Document(Base):
     )
 
     # Relationships
+    articles = relationship("Article", back_populates="document", cascade="all, delete-orphan")
     chunks = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")

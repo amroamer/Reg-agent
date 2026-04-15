@@ -39,5 +39,11 @@ python-magic==0.4.27
 # Language detection
 langdetect==1.0.9
 
+# Markdown generation
+jinja2==3.1.4
+
+# File watching
+watchdog==4.0.2
+
 # Utilities
 pydantic==2.9.2
