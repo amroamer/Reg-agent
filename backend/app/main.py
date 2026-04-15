@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import auth, health
+from app.routers import auth, documents, health
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -96,3 +96,4 @@ app.add_middleware(
 # Routers
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(documents.router)
