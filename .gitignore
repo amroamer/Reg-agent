@@ -15,6 +15,7 @@ build/
 .venv/
 venv/
 env/
+*.pyc
 
 # Node
 node_modules/
@@ -49,11 +50,20 @@ documents/bank_policies/*
 !documents/cma/.gitkeep
 !documents/bank_policies/.gitkeep
 
+# Processed outputs
+processed/
+
+# Backend uploads
+backend/uploads/
+
 # Test / coverage
 .pytest_cache/
 htmlcov/
 .coverage
 coverage.xml
 
-# Alembic
-*.pyc
+# Logs
+*.log
+
+# Sentence transformers model cache
+.cache/
