@@ -57,7 +57,14 @@
       "Bash(curl -sI http://localhost:3000/admin/upload)",
       "Bash(curl -sI http://localhost:3000/admin/library)",
       "Bash(curl -s -X PATCH http://127.0.0.1:8011/api/documents/c48d9aff-209f-44df-9bcd-dd42c5b3044c -H \"Content-Type: application/json\" -d '{\"title_en\":\"Test Update\"}')",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(taskkill //F //PID 29592)",
+      "Bash(curl -s \"http://127.0.0.1:8011/api/documents?page_size=5\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Total: {d[\\\\\"total\\\\\"]}'\\); print\\(f'Stats: {d[\\\\\"stats\\\\\"]}'\\); [print\\(f'  {x[\\\\\"title_en\\\\\"]}: articles={x[\\\\\"total_articles\\\\\"]}, chunks={x[\\\\\"total_chunks\\\\\"]}'\\) for x in d['documents']]\")",
+      "Bash(curl -s \"http://127.0.0.1:8011/api/documents?search=credit&sort_by=title_en&sort_order=asc\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Search results: {d[\\\\\"total\\\\\"]} docs'\\); [print\\(f'  {x[\\\\\"title_en\\\\\"]}'\\) for x in d['documents']]\")",
+      "Bash(curl -s http://127.0.0.1:8011/api/documents/processing-status)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Active docs: {len\\(d\\)}'\\); [print\\(f'  {x[\\\\\"id\\\\\"][:8]} status={x[\\\\\"status\\\\\"]} stage={x[\\\\\"current_stage\\\\\"]}'\\) for x in d]\")"
     ]
   }
 }

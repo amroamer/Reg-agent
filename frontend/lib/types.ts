@@ -39,9 +39,20 @@ export interface Document {
   file_path: string;
   source_url: string | null;
   page_count: number | null;
+  total_articles: number | null;
+  total_chunks: number | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LibraryStats {
+  total: number;
+  indexed: number;
+  processing: number;
+  pending: number;
+  failed: number;
+  superseded: number;
 }
 
 export interface Chunk {
@@ -58,8 +69,6 @@ export interface Chunk {
 export interface DocumentDetail extends Document {
   chunks: Chunk[];
   chunks_count: number;
-  total_articles: number | null;
-  total_chunks: number | null;
   json_path: string | null;
   markdown_path: string | null;
   ingestion_started_at: string | null;
@@ -146,6 +155,7 @@ export interface DocumentListResponse {
   total: number;
   page: number;
   page_size: number;
+  stats: LibraryStats;
 }
 
 // ── Search ───────────────────────────────────────

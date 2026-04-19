@@ -29,6 +29,8 @@ class DocumentResponse(BaseModel):
     file_path: str
     source_url: str | None
     page_count: int | None
+    total_articles: int | None = None
+    total_chunks: int | None = None
     error_message: str | None
     created_at: datetime
     updated_at: datetime
@@ -36,11 +38,36 @@ class DocumentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LibraryStats(BaseModel):
+    total: int = 0
+    indexed: int = 0
+    processing: int = 0
+    pending: int = 0
+    failed: int = 0
+    superseded: int = 0
+
+
 class DocumentListResponse(BaseModel):
     documents: list[DocumentResponse]
     total: int
     page: int
     page_size: int
+    stats: LibraryStats = LibraryStats()
+
+
+class ProcessingStatus(BaseModel):
+    id: uuid.UUID
+    status: str
+    current_stage: str | None = None
+    stage_progress: int | None = None  # 0-100 within current stage
+    total_articles: int | None = None
+    total_chunks: int | None = None
+    error_message: str | None = None
+
+
+class BulkDeleteRequest(BaseModel):
+    document_ids: list[uuid.UUID]
+    confirm: bool = False
 
 
 class ChunkResponse(BaseModel):

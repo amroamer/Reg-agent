@@ -312,38 +312,167 @@ async def bulk_upload(
 
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
-    source: SourceAuthority | None = Query(None),
-    status_filter: DocumentStatus | None = Query(None, alias="status"),
+    source: str | None = Query(None, description="Comma-separated list: SAMA,CMA,BANK_POLICY"),
+    status_filter: str | None = Query(None, alias="status", description="Comma-separated statuses"),
+    search: str | None = Query(None, description="Search title (EN+AR) and document number"),
+    sort_by: str = Query("created_at", regex="^(created_at|title_en|status|total_articles|page_count)$"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):
-    """List all documents with optional filters."""
+    """List documents with filters, search, sort, pagination. Returns library-wide stats."""
+    from app.schemas.document import LibraryStats
+
     query = select(Document)
 
+    # Source filter (comma-separated multi-select)
     if source:
-        query = query.where(Document.source == source)
-    if status_filter:
-        query = query.where(Document.status == status_filter)
+        sources = [s.strip().upper() for s in source.split(",") if s.strip()]
+        if sources:
+            query = query.where(Document.source.in_(sources))
 
-    # Count
+    # Status filter (comma-separated multi-select, case-insensitive)
+    if status_filter:
+        statuses = [s.strip().lower() for s in status_filter.split(",") if s.strip()]
+        if statuses:
+            query = query.where(Document.status.in_(statuses))
+
+    # Search: title (EN or AR) or document number (case-insensitive)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.where(
+            (Document.title_en.ilike(term))
+            | (Document.title_ar.ilike(term))
+            | (Document.document_number.ilike(term))
+        )
+
+    # Count filtered total
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    # Paginate
-    query = query.order_by(Document.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    # Sort
+    sort_col_map = {
+        "created_at": Document.created_at,
+        "title_en": Document.title_en,
+        "status": Document.status,
+        "total_articles": Document.total_articles,
+        "page_count": Document.page_count,
+    }
+    sort_col = sort_col_map.get(sort_by, Document.created_at)
+    query = query.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
 
+    # Paginate
+    query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     documents = result.scalars().all()
+
+    # Library-wide stats (NOT filtered — shows total breakdown)
+    stats_result = await db.execute(
+        select(Document.status, func.count()).group_by(Document.status)
+    )
+    status_counts = {str(s.value if hasattr(s, "value") else s): c for s, c in stats_result.all()}
+    stats = LibraryStats(
+        total=sum(status_counts.values()),
+        indexed=status_counts.get("indexed", 0),
+        processing=status_counts.get("processing", 0),
+        pending=status_counts.get("pending", 0),
+        failed=status_counts.get("failed", 0),
+        superseded=status_counts.get("superseded", 0),
+    )
 
     return DocumentListResponse(
         documents=[DocumentResponse.model_validate(d) for d in documents],
         total=total,
         page=page,
         page_size=page_size,
+        stats=stats,
     )
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Lightweight polling endpoint for active documents
+# ════════════════════════════════════════════════════════════════
+
+@router.get("/processing-status", response_model=list[dict])
+async def processing_status(
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Poll endpoint: return status of all pending/processing documents."""
+    result = await db.execute(
+        select(Document).where(
+            Document.status.in_([DocumentStatus.PENDING, DocumentStatus.PROCESSING])
+        )
+    )
+    docs = result.scalars().all()
+
+    from app.models.ingestion_batch import IngestionQueue
+    out = []
+    for doc in docs:
+        # Find latest queue item for stage info
+        qr = await db.execute(
+            select(IngestionQueue)
+            .where(IngestionQueue.document_id == doc.id)
+            .order_by(IngestionQueue.created_at.desc())
+            .limit(1)
+        )
+        qi = qr.scalar_one_or_none()
+        out.append({
+            "id": str(doc.id),
+            "status": doc.status.value,
+            "current_stage": qi.current_stage if qi else None,
+            "stage_progress": qi.stage_progress if qi else {},
+            "total_articles": doc.total_articles,
+            "total_chunks": doc.total_chunks,
+            "error_message": doc.error_message,
+        })
+    return out
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Bulk delete
+# ════════════════════════════════════════════════════════════════
+
+@router.post("/bulk-delete")
+async def bulk_delete(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Bulk delete documents. Body: {document_ids: [...], confirm: true}"""
+    from app.services.qdrant_service import delete_by_document_id
+
+    ids = body.get("document_ids", [])
+    if not body.get("confirm"):
+        raise HTTPException(400, "Must set confirm=true")
+    if not ids:
+        raise HTTPException(400, "No document_ids provided")
+
+    uuids = [uuid.UUID(i) for i in ids]
+    result = await db.execute(select(Document).where(Document.id.in_(uuids)))
+    docs = result.scalars().all()
+
+    deleted = 0
+    for doc in docs:
+        # Qdrant
+        try:
+            delete_by_document_id(str(doc.id))
+        except Exception:
+            pass
+        # Files
+        for attr in ("file_path", "json_path", "markdown_path"):
+            p = getattr(doc, attr, None)
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        await db.delete(doc)
+        deleted += 1
+
+    return {"deleted": deleted, "requested": len(ids)}
 
 
 @router.get("/{document_id}", response_model=DocumentDetailResponse)
