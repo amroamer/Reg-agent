@@ -59,19 +59,29 @@ async def hybrid_search(
         cached["from_cache"] = True
         return cached
 
-    # 1. Vector search via Qdrant
-    query_vector = embedding_service.embed_query(query)
-    vector_results = qdrant_service.search_vectors(
-        query_vector=query_vector,
-        sources=sources,
-        language=None,  # Search across all languages for better recall
-        limit=top_k * 2,
-    )
+    # 1. Vector search via Qdrant — only if the embedding model is actually
+    #    available. Without sentence-transformers installed we'd send a zero
+    #    vector, and Qdrant would return results in arbitrary order, swamping
+    #    the merge with irrelevant chunks.
+    vector_results: list[dict] = []
+    if embedding_service.is_available():
+        query_vector = embedding_service.embed_query(query)
+        vector_results = qdrant_service.search_vectors(
+            query_vector=query_vector,
+            sources=sources,
+            language=None,  # Search across all languages for better recall
+            limit=top_k * 2,
+        )
+    else:
+        logger.info(
+            "Skipping vector search: embedding model unavailable "
+            "(falling back to BM25-only ranking)"
+        )
 
-    # 2. BM25 keyword search via PostgreSQL full-text search
+    # 2. BM25 keyword search via PostgreSQL full-text search (title-weighted)
     keyword_results = await _bm25_search(db, query, sources, limit=top_k * 2)
 
-    # 3. Reciprocal Rank Fusion
+    # 3. Reciprocal Rank Fusion + title-phrase-match boost
     merged = _reciprocal_rank_fusion(vector_results, keyword_results, k=RRF_K)
 
     # 4. Take top-k and enrich with document metadata
@@ -100,34 +110,65 @@ async def _bm25_search(
     sources: list[str] | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """Execute PostgreSQL full-text search."""
-    # Build the query with both English and simple (for Arabic) text search
+    """Execute PostgreSQL full-text search with title-weighted ranking.
+
+    Ranking strategy (high → low influence):
+      A. Article title (EN + AR)         — weight 'A' (≈ 1.0)
+      B. Chunk content  (EN + AR)        — weight 'B' (≈ 0.4)
+      + phrase-in-title bonus: results whose article title contains the
+        exact query phrase jump to the top regardless of ts_rank.
+
+    This prevents queries like "Disclosure Requirements" from surfacing
+    articles titled "Eligibility Requirements" just because they share the
+    word "requirements".
+    """
     sql = text("""
-        SELECT
+        WITH scored AS (
+          SELECT
             c.id::text as chunk_id,
-            c.document_id::text,
+            c.document_id::text as document_id,
             c.content_en,
             c.content_ar,
             c.article_number,
             c.section_title,
             c.page_number,
             c.qdrant_point_id,
-            ts_rank(
-                to_tsvector('english', coalesce(c.content_en, '')) ||
-                to_tsvector('simple', coalesce(c.content_ar, '')),
-                plainto_tsquery('english', :query) || plainto_tsquery('simple', :query)
-            ) as rank
-        FROM chunks c
-        JOIN documents d ON c.document_id = d.id
-        WHERE (
-            to_tsvector('english', coalesce(c.content_en, '')) ||
-            to_tsvector('simple', coalesce(c.content_ar, ''))
-        ) @@ (
-            plainto_tsquery('english', :query) || plainto_tsquery('simple', :query)
+            (
+              setweight(to_tsvector('english', coalesce(a.article_title_en, '')), 'A') ||
+              setweight(to_tsvector('simple',  coalesce(a.article_title_ar, '')), 'A') ||
+              setweight(to_tsvector('english', coalesce(c.content_en, '')),      'B') ||
+              setweight(to_tsvector('simple',  coalesce(c.content_ar, '')),      'B')
+            ) as tsv,
+            -- Phrase-in-title: exact adjacent-phrase match in the article title
+            (
+              (
+                to_tsvector('english', coalesce(a.article_title_en, '')) ||
+                to_tsvector('simple',  coalesce(a.article_title_ar, ''))
+              ) @@ (
+                phraseto_tsquery('english', :query) ||
+                phraseto_tsquery('simple',  :query)
+              )
+            ) as title_phrase_match
+          FROM chunks c
+          JOIN documents d ON c.document_id = d.id
+          LEFT JOIN articles a ON c.article_id = a.id
+          WHERE d.status = 'INDEXED'
+            AND (:has_source_filter = false OR d.source = ANY(:sources))
         )
-        AND d.status = 'INDEXED'
-        AND (:has_source_filter = false OR d.source = ANY(:sources))
-        ORDER BY rank DESC
+        SELECT
+          chunk_id, document_id, content_en, content_ar,
+          article_number, section_title, page_number, qdrant_point_id,
+          ts_rank(tsv,
+            plainto_tsquery('english', :query) ||
+            plainto_tsquery('simple',  :query)
+          ) as rank,
+          title_phrase_match
+        FROM scored
+        WHERE tsv @@ (
+          plainto_tsquery('english', :query) ||
+          plainto_tsquery('simple',  :query)
+        )
+        ORDER BY title_phrase_match DESC, rank DESC
         LIMIT :limit
     """)
 
@@ -148,6 +189,7 @@ async def _bm25_search(
             "chunk_id": row.chunk_id,
             "document_id": row.document_id,
             "score": float(row.rank),
+            "title_phrase_match": bool(row.title_phrase_match),
             "content_en": row.content_en,
             "content_ar": row.content_ar,
             "article_number": row.article_number,
@@ -163,35 +205,71 @@ def _reciprocal_rank_fusion(
     vector_results: list[dict],
     keyword_results: list[dict],
     k: int = 60,
+    min_score: float = 0.0,
+    title_phrase_bonus: float = 1.0,
 ) -> list[dict]:
     """Merge results from vector and keyword search using RRF.
 
     RRF_score(d) = sum( 1 / (k + rank) ) for each list where d appears.
+
+    Extras:
+    - Results whose article title contains the query as an exact phrase
+      get ``title_phrase_bonus`` added to their score (pushes them to top).
+    - Results with total score below ``min_score`` are dropped — prevents
+      vector-only long-tail noise from cluttering the final list.
+    - BM25 presence is tracked; if a result appears ONLY in the vector list
+      (i.e. weak/no lexical overlap) AND ranks outside the vector top-5,
+      it's dropped as noise.
     """
     scores: dict[str, float] = defaultdict(float)
     result_map: dict[str, dict] = {}
+    in_bm25: set[str] = set()
+    vector_rank: dict[str, int] = {}
 
     # Score vector results
     for rank, result in enumerate(vector_results):
         doc_key = result["id"]
         scores[doc_key] += 1.0 / (k + rank + 1)
+        vector_rank[doc_key] = rank
         if doc_key not in result_map:
             result_map[doc_key] = result
 
-    # Score keyword results
+    # Score keyword results (with title-phrase bonus)
     for rank, result in enumerate(keyword_results):
         doc_key = result.get("id", result.get("chunk_id", ""))
         scores[doc_key] += 1.0 / (k + rank + 1)
-        if doc_key not in result_map:
-            result_map[doc_key] = result
+        if result.get("title_phrase_match"):
+            scores[doc_key] += title_phrase_bonus
+        in_bm25.add(doc_key)
+        # BM25 results carry more enriched fields; prefer them in result_map
+        # (vector results only have Qdrant payload metadata, no content).
+        result_map[doc_key] = result
+
+    # Drop vector-only results that don't appear in BM25 and aren't in the
+    # strong-similarity top of the vector list. Without this, every chunk in
+    # a small corpus comes back because vector cosine distances are all close.
+    VECTOR_ONLY_TOP_K = 5
+    filtered: dict[str, float] = {}
+    for key, score in scores.items():
+        if key in in_bm25:
+            filtered[key] = score
+            continue
+        if vector_rank.get(key, 99) < VECTOR_ONLY_TOP_K:
+            filtered[key] = score
+            continue
+        # else: vector-only and low-ranked → drop as noise
+
+    # Apply minimum-score floor
+    if min_score > 0:
+        filtered = {k: v for k, v in filtered.items() if v >= min_score}
 
     # Sort by combined RRF score
-    sorted_keys = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    sorted_keys = sorted(filtered.keys(), key=lambda x: filtered[x], reverse=True)
 
     merged = []
     for key in sorted_keys:
         entry = result_map[key].copy()
-        entry["rrf_score"] = scores[key]
+        entry["rrf_score"] = filtered[key]
         merged.append(entry)
 
     return merged
