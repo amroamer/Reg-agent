@@ -67,7 +67,10 @@
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Active docs: {len\\(d\\)}'\\); [print\\(f'  {x[\\\\\"id\\\\\"][:8]} status={x[\\\\\"status\\\\\"]} stage={x[\\\\\"current_stage\\\\\"]}'\\) for x in d]\")",
       "Bash(curl -s http://127.0.0.1:8011/api/documents?page_size=50)",
       "Bash(read id *)",
-      "Bash(curl -s -X POST http://127.0.0.1:8011/api/documents/__TRACKED_VAR__/reprocess)"
+      "Bash(curl -s -X POST http://127.0.0.1:8011/api/documents/__TRACKED_VAR__/reprocess)",
+      "Bash(curl -s http://localhost:3000/admin/library)",
+      "Bash(grep -oE \"<h1[^<]*</h1>|error.{0,80}\")",
+      "Bash(curl -s http://localhost:3000/admin/library/14fdc80b-10b5-464c-a54d-0f5e0b5525f2)"
     ]
   }
 }

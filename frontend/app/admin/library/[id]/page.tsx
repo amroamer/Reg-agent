@@ -56,6 +56,8 @@ export default function AdminDocumentDetailPage() {
     page_start: number | null;
     page_end: number | null;
   } | null>(null);
+  const [articleSearch, setArticleSearch] = useState("");
+  const [articleLang, setArticleLang] = useState<"ar" | "en" | "both">("both");
 
   const fetchDoc = useCallback(async () => {
     try {
@@ -275,15 +277,98 @@ export default function AdminDocumentDetailPage() {
       )}
 
       {tab === "articles" && articles && (
-        <div className="space-y-2">
+        <div>
+          {/* Toolbar: language toggle + search */}
+          <div className="flex items-center gap-3 mb-4 flex-wrap">
+            <div className="flex items-center gap-1 border border-gray-300 rounded-lg p-0.5 bg-white">
+              {(["ar", "en", "both"] as const).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setArticleLang(l)}
+                  className={clsx(
+                    "px-3 py-1 text-xs font-medium rounded transition",
+                    articleLang === l
+                      ? "bg-kpmg-blue text-white"
+                      : "text-gray-600 hover:bg-gray-100",
+                  )}
+                >
+                  {l === "ar" ? "عربي" : l === "en" ? "English" : "Both"}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={articleSearch}
+              onChange={(e) => setArticleSearch(e.target.value)}
+              placeholder="Search within articles..."
+              className="flex-1 min-w-60 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:border-kpmg-blue focus:outline-none"
+            />
+            <button
+              onClick={() => {
+                if (expandedChapters.size === articles.chapters.length) {
+                  setExpandedChapters(new Set());
+                } else {
+                  setExpandedChapters(
+                    new Set(
+                      articles.chapters.map(
+                        (c, i) => c.chapter_number || `_${i}`,
+                      ),
+                    ),
+                  );
+                }
+              }}
+              className="text-xs text-kpmg-blue hover:underline"
+            >
+              {expandedChapters.size === articles.chapters.length
+                ? "Collapse All"
+                : "Expand All"}
+            </button>
+            <span className="text-xs text-gray-500">
+              {articles.total_articles} articles
+            </span>
+          </div>
+
+          {/* Ingestion warnings banner */}
+          {log?.errors && log.errors.length > 0 && (
+            <div className="mb-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800">
+              <p className="font-semibold mb-1">⚠ Extraction warnings</p>
+              <p>
+                Some articles may have incomplete content due to PDF font or
+                layout issues. Check each article's preview.
+              </p>
+            </div>
+          )}
+
+          {/* Chapter list */}
+          <div className="space-y-2">
           {articles.chapters.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-10">
-              No articles extracted yet.
-            </p>
+            <div className="bg-white rounded-lg border border-gray-200 py-12 text-center">
+              <p className="text-sm text-gray-500">
+                No articles extracted yet.
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                The parser may not recognize this document&apos;s structure.
+                Try re-processing or check the ingestion log.
+              </p>
+            </div>
           ) : (
             articles.chapters.map((ch, idx) => {
               const key = ch.chapter_number || `_${idx}`;
               const expanded = expandedChapters.has(key);
+              // Filter articles by search
+              const matchedArticles = articleSearch.trim()
+                ? ch.articles.filter((a) => {
+                    const q = articleSearch.toLowerCase();
+                    return (
+                      (a.article_title_en || "").toLowerCase().includes(q) ||
+                      (a.article_title_ar || "").includes(q) ||
+                      (a.article_number || "").includes(q)
+                    );
+                  })
+                : ch.articles;
+              if (articleSearch.trim() && matchedArticles.length === 0) {
+                return null;
+              }
               return (
                 <div
                   key={key}
@@ -308,7 +393,9 @@ export default function AdminDocumentDetailPage() {
                         {ch.chapter_number
                           ? `Chapter ${ch.chapter_number}: `
                           : ""}
-                        {ch.chapter_title_en || ch.chapter_title_ar || "(untitled chapter)"}
+                        {ch.chapter_title_en ||
+                          ch.chapter_title_ar ||
+                          "(untitled chapter)"}
                       </p>
                       {ch.chapter_title_ar && ch.chapter_title_en && (
                         <p className="text-xs text-gray-500 font-arabic">
@@ -317,50 +404,73 @@ export default function AdminDocumentDetailPage() {
                       )}
                     </div>
                     <span className="text-xs text-gray-400">
-                      {ch.articles.length} article{ch.articles.length !== 1 ? "s" : ""}
+                      {matchedArticles.length} article
+                      {matchedArticles.length !== 1 ? "s" : ""}
                     </span>
                   </button>
                   {expanded && (
                     <div className="border-t border-gray-100 divide-y divide-gray-100">
-                      {ch.articles.map((a) => (
-                        <button
-                          key={a.id}
-                          onClick={async () => {
-                            try {
-                              const { data } = await api.get(
-                                `/documents/${docId}/articles/${a.article_index}`,
-                              );
-                              setSelectedArticle(data);
-                            } catch {
-                              // silent
-                            }
-                          }}
-                          className="w-full px-4 py-2 ps-10 text-sm text-start hover:bg-blue-50 transition"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-gray-700">
-                              {a.article_number
-                                ? `Article ${a.article_number}`
-                                : "Article"}
-                              {a.article_title_en && `: ${a.article_title_en}`}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              pp. {a.page_start}–{a.page_end}
-                            </span>
-                          </div>
-                          {a.article_title_ar && (
-                            <p className="text-xs text-gray-500 font-arabic mt-0.5">
-                              {a.article_title_ar}
-                            </p>
-                          )}
-                        </button>
-                      ))}
+                      {matchedArticles.map((a) => {
+                        // Quality indicator: check title for CID / short content hint
+                        const titleEn = a.article_title_en || "";
+                        const titleAr = a.article_title_ar || "";
+                        const hasCid =
+                          titleEn.includes("(cid:") || titleAr.includes("(cid:");
+                        const quality = hasCid ? "warn" : "ok";
+                        return (
+                          <button
+                            key={a.id}
+                            onClick={async () => {
+                              try {
+                                const { data } = await api.get(
+                                  `/documents/${docId}/articles/${a.article_index}`,
+                                );
+                                setSelectedArticle(data);
+                              } catch {
+                                // silent
+                              }
+                            }}
+                            className="w-full px-4 py-2 ps-10 text-sm text-start hover:bg-blue-50 transition"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-gray-700 flex items-center gap-1.5">
+                                {quality === "ok" ? (
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full bg-green-500"
+                                    title="Extraction OK"
+                                  />
+                                ) : (
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full bg-yellow-500"
+                                    title="Extraction warning"
+                                  />
+                                )}
+                                {a.article_number
+                                  ? `Article ${a.article_number}`
+                                  : "Article"}
+                                {articleLang !== "ar" &&
+                                  a.article_title_en &&
+                                  `: ${a.article_title_en}`}
+                              </span>
+                              <span className="text-xs text-gray-400">
+                                pp. {a.page_start}–{a.page_end}
+                              </span>
+                            </div>
+                            {articleLang !== "en" && a.article_title_ar && (
+                              <p className="text-xs text-gray-500 font-arabic mt-0.5">
+                                {a.article_title_ar}
+                              </p>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
               );
             })
           )}
+          </div>
         </div>
       )}
 

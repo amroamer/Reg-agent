@@ -1,48 +1,120 @@
-"""Stage 2: Parse extracted PDF text into structured JSON with articles."""
+"""Stage 2: Parse extracted PDF text into structured JSON with articles.
+
+Key fix: Distinguish article HEADINGS from article REFERENCES.
+
+- HEADING: "Article 5:" at start of a line, followed by title + body
+- REFERENCE: "Article 5" appearing mid-sentence (e.g., "as specified in Article 5")
+
+We handle this by:
+1. Anchoring regex to line start (^ with MULTILINE)
+2. Requiring minimum content length (20 chars) after a heading
+3. Rejecting fragments that start with conjunctions/punctuation
+4. Deduplicating article numbers (keep the one with more content)
+"""
 
 import logging
 import re
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# --- Arabic patterns ---
-CHAPTER_AR = re.compile(
-    r"(الباب|الفصل)\s+"
-    r"(الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر"
-    r"|الحادي عشر|الثاني عشر|[\u0660-\u0669\d]+)"
-    r"\s*[:\-\u2013\u2014]?\s*(.*)",
-    re.MULTILINE,
-)
-
-ARTICLE_AR = re.compile(
-    r"(المادة)\s+"
-    r"(الأولى|الثانية|الثالثة|الرابعة|الخامسة|السادسة|السابعة|الثامنة|التاسعة|العاشرة"
-    r"|[\u0660-\u0669\d]+(?:[\.\u066B]\d+)?)"
-    r"\s*[:\-\u2013\u2014]?\s*(.*)",
-    re.MULTILINE,
-)
-
-# --- English patterns ---
-CHAPTER_EN = re.compile(r"Chapter\s+(\d+)\s*[:\-\u2013\u2014]?\s*(.*)", re.MULTILINE | re.IGNORECASE)
-ARTICLE_EN = re.compile(r"Article\s+(\d+[\.\d]*)\s*[:\-\u2013\u2014]?\s*(.*)", re.MULTILINE | re.IGNORECASE)
-SECTION_EN = re.compile(r"Section\s+(\d+[\.\d]*)\s*[:\-\u2013\u2014]?\s*(.*)", re.MULTILINE | re.IGNORECASE)
-
 # Arabic ordinal → number mapping
 ARABIC_ORDINALS = {
-    "الأول": "1", "الأولى": "1",
-    "الثاني": "2", "الثانية": "2",
-    "الثالث": "3", "الثالثة": "3",
-    "الرابع": "4", "الرابعة": "4",
-    "الخامس": "5", "الخامسة": "5",
-    "السادس": "6", "السادسة": "6",
-    "السابع": "7", "السابعة": "7",
-    "الثامن": "8", "الثامنة": "8",
-    "التاسع": "9", "التاسعة": "9",
-    "العاشر": "10", "العاشرة": "10",
-    "الحادي عشر": "11", "الثاني عشر": "12",
+    "الأولى": "1", "الأول": "1",
+    "الثانية": "2", "الثاني": "2",
+    "الثالثة": "3", "الثالث": "3",
+    "الرابعة": "4", "الرابع": "4",
+    "الخامسة": "5", "الخامس": "5",
+    "السادسة": "6", "السادس": "6",
+    "السابعة": "7", "السابع": "7",
+    "الثامنة": "8", "الثامن": "8",
+    "التاسعة": "9", "التاسع": "9",
+    "العاشرة": "10", "العاشر": "10",
+    "الحادي عشر": "11", "الحادية عشرة": "11",
+    "الثاني عشر": "12", "الثانية عشرة": "12",
+    "الثالث عشر": "13", "الثالثة عشرة": "13",
+    "الرابع عشر": "14", "الرابعة عشرة": "14",
+    "الخامس عشر": "15", "الخامسة عشرة": "15",
+    "السادس عشر": "16", "السادسة عشرة": "16",
+    "السابع عشر": "17", "السابعة عشرة": "17",
+    "الثامن عشر": "18", "الثامنة عشرة": "18",
+    "التاسع عشر": "19", "التاسعة عشرة": "19",
+    "العشرون": "20", "العشرين": "20",
 }
+ORDINAL_ALT = "|".join(sorted(ARABIC_ORDINALS.keys(), key=len, reverse=True))
+
+# ═══════════════════════════════════════════════════════════
+# ANCHORED HEADING REGEX (must be at start of line)
+# ═══════════════════════════════════════════════════════════
+
+# English article heading — at line start, number + optional delimiter + optional title
+# Must have either a delimiter (:.-) OR be at end of line (title follows on next line)
+ARTICLE_EN_HEADING = re.compile(
+    r"^[\s]*(?:Article|ARTICLE)\s+(\d+(?:[\.\d]+)?)\s*(?:[:\-\u2013\u2014\.]+\s*(.*?))?$",
+    re.MULTILINE,
+)
+SECTION_EN_HEADING = re.compile(
+    r"^[\s]*(?:Section|SECTION)\s+(\d+(?:[\.\d]+)?)\s*(?:[:\-\u2013\u2014\.]+\s*(.*?))?$",
+    re.MULTILINE,
+)
+CHAPTER_EN_HEADING = re.compile(
+    r"^[\s]*(?:Chapter|CHAPTER|Part|PART)\s+(\d+(?:[\.\d]+)?)\s*(?:[:\-\u2013\u2014\.]?\s*(.*?))?$",
+    re.MULTILINE,
+)
+
+# Arabic article heading — same flexibility
+ARTICLE_AR_HEADING = re.compile(
+    rf"^[\s]*(?:المادة|مادة)\s+(?:({ORDINAL_ALT})|\(?\s*([\u0660-\u0669\d]+)\s*\)?)\s*(?:[:\-\u2013\u2014\.]?\s*(.*?))?$",
+    re.MULTILINE,
+)
+CHAPTER_AR_HEADING = re.compile(
+    rf"^[\s]*(?:الباب|الفصل)\s+(?:({ORDINAL_ALT})|\(?\s*([\u0660-\u0669\d]+)\s*\)?)\s*(?:[:\-\u2013\u2014\.]?\s*(.*?))?$",
+    re.MULTILINE,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════
+
+MIN_CONTENT_LEN = 20  # characters; anything shorter is a fragment
+FRAGMENT_STARTS = (",", ".", ";", "and ", "or ", "و ", "،", "أو ", ")", "(")
+
+
+def _clean_text(text: str) -> str:
+    """Remove CID placeholders + normalize whitespace."""
+    text = re.sub(r"\(cid:\d+\)", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
+def _is_fragment(content: str) -> bool:
+    """Check if content is too short or starts with a fragment indicator."""
+    if len(content.strip()) < MIN_CONTENT_LEN:
+        return True
+    stripped = content.strip()
+    for f in FRAGMENT_STARTS:
+        if stripped.startswith(f):
+            return True
+    return False
+
+
+def _remove_headers_footers(text: str) -> str:
+    """Remove lines that appear 3+ times (page headers/footers)."""
+    lines = text.split("\n")
+    counts = Counter(ln.strip() for ln in lines if ln.strip() and len(ln) < 200)
+    repeated = {ln for ln, c in counts.items() if c >= 3}
+    if not repeated:
+        return text
+    return "\n".join(ln for ln in lines if ln.strip() not in repeated)
+
+
+# ═══════════════════════════════════════════════════════════
+# PARSER
+# ═══════════════════════════════════════════════════════════
 
 
 class StructuralParser:
@@ -52,50 +124,41 @@ class StructuralParser:
         """Parse extraction result into structured document JSON."""
         pages = extraction_result["pages"]
         language = extraction_result["language"]
-        full_text = "\n\n".join(p["text"] for p in pages if p["text"])
 
-        # Parse articles based on language
+        # Clean all page text
+        full_text = "\n\n".join(p["text"] for p in pages if p.get("text"))
+        full_text = _clean_text(full_text)
+        full_text = _remove_headers_footers(full_text)
+
+        # Parse articles based on detected language
         if language == "ar":
-            ar_articles = self._parse_articles(full_text, "ar")
+            ar_articles = self._parse_articles_ar(full_text)
             en_articles = []
         elif language == "en":
             ar_articles = []
-            en_articles = self._parse_articles(full_text, "en")
-        else:
-            # Bilingual: try parsing both
-            ar_articles = self._parse_articles(full_text, "ar")
-            en_articles = self._parse_articles(full_text, "en")
+            en_articles = self._parse_articles_en(full_text)
+        else:  # bilingual
+            ar_articles = self._parse_articles_ar(full_text)
+            en_articles = self._parse_articles_en(full_text)
 
-        # Align bilingual articles
+        # Validate each set
+        ar_articles = self._validate_articles(ar_articles)
+        en_articles = self._validate_articles(en_articles)
+
+        logger.info(
+            "Parsed %d AR articles, %d EN articles (after validation)",
+            len(ar_articles),
+            len(en_articles),
+        )
+
+        # Align bilingual
         aligned = self._align_bilingual(ar_articles, en_articles)
 
-        # Map page numbers
-        page_boundaries = [(0, 1)]
-        offset = 0
-        for page in pages:
-            offset += len(page["text"]) + 2
-            page_boundaries.append((offset, page["page_number"]))
-        aligned = self._map_pages(aligned, full_text, page_boundaries)
+        # Map pages
+        aligned = self._map_pages(aligned, full_text, pages)
 
-        # Collect tables
-        all_tables = []
-        for page in pages:
-            for table in page.get("tables", []):
-                all_tables.append({
-                    "table_index": len(all_tables),
-                    "article_number": "",
-                    "caption_ar": None,
-                    "caption_en": None,
-                    "headers": table.get("headers", []),
-                    "rows": table.get("rows", []),
-                    "page_number": page["page_number"],
-                })
-
-        # Build TOC
-        toc = self._build_toc(aligned)
-
+        # Build output JSON
         doc_id = str(uuid.uuid4())
-
         return {
             "$schema": "reginspector-document-v1",
             "document": {
@@ -116,15 +179,14 @@ class StructuralParser:
                 "extraction_date": datetime.now(timezone.utc).isoformat(),
                 "extraction_confidence": self._avg_confidence(pages),
             },
-            "table_of_contents": toc,
             "articles": aligned,
             "appendices": [],
-            "tables": all_tables,
+            "tables": [],
             "definitions": [],
             "metadata": {
                 "total_articles": len(aligned),
-                "total_sub_articles": sum(len(a.get("sub_articles", [])) for a in aligned),
-                "total_tables": len(all_tables),
+                "total_sub_articles": 0,
+                "total_tables": 0,
                 "total_definitions": 0,
                 "total_appendices": 0,
                 "primary_language": language,
@@ -132,104 +194,168 @@ class StructuralParser:
             },
         }
 
-    def _parse_articles(self, text: str, language: str) -> list[dict]:
-        """Parse text into a list of articles."""
-        if language == "ar":
-            article_pattern = ARTICLE_AR
-            chapter_pattern = CHAPTER_AR
-        else:
-            article_pattern = ARTICLE_EN
-            chapter_pattern = CHAPTER_EN
+    # ─── English parser ───
 
-        # Find all article positions
-        matches = list(article_pattern.finditer(text))
-        if not matches:
-            # Try section pattern for English
-            if language == "en":
-                matches = list(SECTION_EN.finditer(text))
+    def _parse_articles_en(self, text: str) -> list[dict]:
+        """Parse English articles using anchored regex (must be at line start)."""
+        # Find all chapters + articles
+        chapters = [
+            {
+                "start": m.start(),
+                "number": m.group(1),
+                "title": (m.group(2) or "").strip(),
+            }
+            for m in CHAPTER_EN_HEADING.finditer(text)
+        ]
 
-        if not matches:
-            # No articles found — treat entire text as one article
-            return [{
-                "article_index": 0,
-                "chapter_number": None,
-                "chapter_title": None,
-                "article_number": "1",
-                "article_title": "",
-                "content": text.strip(),
-                "sub_articles": [],
-            }]
+        article_matches = list(ARTICLE_EN_HEADING.finditer(text))
+        if not article_matches:
+            # Try Section as fallback
+            article_matches = list(SECTION_EN_HEADING.finditer(text))
 
-        # Find chapters for context
-        chapter_matches = list(chapter_pattern.finditer(text))
-        chapter_ranges = []
-        for cm in chapter_matches:
-            num = cm.group(2) if language == "en" else ARABIC_ORDINALS.get(cm.group(2), cm.group(2))
-            title = cm.group(3) if len(cm.groups()) >= 3 else ""
-            chapter_ranges.append({"start": cm.start(), "number": str(num), "title": title.strip()})
+        if not article_matches:
+            return []
 
         articles = []
-        for i, match in enumerate(matches):
-            start = match.start()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        for i, m in enumerate(article_matches):
+            start = m.start()
+            end = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(text)
 
-            content = text[start:end].strip()
+            # Stop at next chapter heading if it comes first
+            for ch in chapters:
+                if ch["start"] > m.end() and ch["start"] < end:
+                    end = ch["start"]
+                    break
 
-            # Extract article number
-            if language == "ar":
-                raw_num = match.group(2)
-                article_num = ARABIC_ORDINALS.get(raw_num, raw_num)
-                title = match.group(3).strip() if match.group(3) else ""
+            raw_block = text[m.end():end].strip()
+            title_line = (m.group(2) or "").strip()
+
+            # Split title line from body
+            if "\n" in raw_block:
+                # title might continue, but usually body starts after newline
+                body = raw_block
             else:
-                article_num = match.group(1)
-                title = match.group(2).strip() if match.group(2) else ""
+                body = raw_block
 
             # Find parent chapter
-            chapter_num = None
-            chapter_title = None
-            for cr in chapter_ranges:
-                if cr["start"] <= start:
-                    chapter_num = cr["number"]
-                    chapter_title = cr["title"]
+            parent_chapter = None
+            for ch in chapters:
+                if ch["start"] < start:
+                    parent_chapter = ch
 
             articles.append({
-                "article_index": i,
-                "chapter_number": chapter_num,
-                "chapter_title": chapter_title,
-                "article_number": str(article_num),
-                "article_title": title,
-                "content": content,
-                "sub_articles": [],
+                "number": m.group(1),
+                "title": title_line,
+                "content": body,
+                "chapter_number": parent_chapter["number"] if parent_chapter else None,
+                "chapter_title": parent_chapter["title"] if parent_chapter else None,
             })
 
         return articles
+
+    # ─── Arabic parser ───
+
+    def _parse_articles_ar(self, text: str) -> list[dict]:
+        """Parse Arabic articles with line-anchored regex."""
+        chapters = []
+        for m in CHAPTER_AR_HEADING.finditer(text):
+            ordinal = m.group(1)
+            numeric = m.group(2)
+            title = (m.group(3) or "").strip()
+            num = ARABIC_ORDINALS.get(ordinal, numeric) if ordinal else numeric
+            chapters.append({"start": m.start(), "number": str(num), "title": title})
+
+        article_matches = list(ARTICLE_AR_HEADING.finditer(text))
+        if not article_matches:
+            return []
+
+        articles = []
+        for i, m in enumerate(article_matches):
+            start = m.start()
+            end = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(text)
+            for ch in chapters:
+                if ch["start"] > m.end() and ch["start"] < end:
+                    end = ch["start"]
+                    break
+
+            ordinal = m.group(1)
+            numeric = m.group(2)
+            num = ARABIC_ORDINALS.get(ordinal, numeric) if ordinal else numeric
+            title = (m.group(3) or "").strip()
+            body = text[m.end():end].strip()
+
+            parent_chapter = None
+            for ch in chapters:
+                if ch["start"] < start:
+                    parent_chapter = ch
+
+            articles.append({
+                "number": str(num),
+                "title": title,
+                "content": body,
+                "chapter_number": parent_chapter["number"] if parent_chapter else None,
+                "chapter_title": parent_chapter["title"] if parent_chapter else None,
+            })
+
+        return articles
+
+    # ─── Validation ───
+
+    def _validate_articles(self, articles: list[dict]) -> list[dict]:
+        """Remove fragments + deduplicate by article number (keep longest)."""
+        validated = []
+        seen: dict[str, int] = {}
+
+        for art in articles:
+            content = art.get("content", "")
+            # Skip fragments
+            if _is_fragment(content):
+                logger.debug(
+                    "Skipping fragment for Article %s: %r",
+                    art.get("number"),
+                    content[:30],
+                )
+                continue
+
+            num = art.get("number")
+            if num in seen:
+                # Keep the one with longer content
+                prev_idx = seen[num]
+                if len(content) > len(validated[prev_idx]["content"]):
+                    validated[prev_idx] = art
+                continue
+
+            seen[num] = len(validated)
+            validated.append(art)
+
+        return validated
+
+    # ─── Bilingual alignment ───
 
     def _align_bilingual(self, ar_articles: list, en_articles: list) -> list[dict]:
         """Align Arabic and English articles by article number."""
         if not ar_articles and not en_articles:
             return []
 
-        ar_by_num = {a["article_number"]: a for a in ar_articles}
-        en_by_num = {a["article_number"]: a for a in en_articles}
-
-        all_numbers = sorted(
-            set(list(ar_by_num.keys()) + list(en_by_num.keys())),
+        ar_by = {a["number"]: a for a in ar_articles}
+        en_by = {a["number"]: a for a in en_articles}
+        all_nums = sorted(
+            set(list(ar_by.keys()) + list(en_by.keys())),
             key=lambda x: float(x) if x.replace(".", "").isdigit() else 0,
         )
 
         aligned = []
-        for idx, num in enumerate(all_numbers):
-            ar = ar_by_num.get(num, {})
-            en = en_by_num.get(num, {})
-
+        for idx, num in enumerate(all_nums):
+            ar = ar_by.get(num, {})
+            en = en_by.get(num, {})
             aligned.append({
                 "article_index": idx,
                 "chapter_number": ar.get("chapter_number") or en.get("chapter_number"),
                 "chapter_title_ar": ar.get("chapter_title"),
                 "chapter_title_en": en.get("chapter_title"),
                 "article_number": num,
-                "article_title_ar": ar.get("article_title"),
-                "article_title_en": en.get("article_title"),
+                "article_title_ar": ar.get("title"),
+                "article_title_en": en.get("title"),
                 "content_ar": ar.get("content"),
                 "content_en": en.get("content"),
                 "page_start": None,
@@ -241,45 +367,43 @@ class StructuralParser:
                 "keywords_en": [],
                 "topics": [],
             })
-
         return aligned
 
-    def _map_pages(self, articles: list, full_text: str, page_boundaries: list) -> list:
-        """Map articles to their page numbers in the PDF."""
+    # ─── Page mapping ───
+
+    def _map_pages(self, articles: list, full_text: str, pages: list) -> list:
+        """Map each article to its page range."""
+        # Build cumulative char offsets per page
+        boundaries = []  # (char_offset, page_number)
+        offset = 0
+        for p in pages:
+            boundaries.append((offset, p["page_number"]))
+            offset += len(_clean_text(p["text"])) + 2  # +2 for "\n\n"
+
+        def find_page(char_offset: int) -> int:
+            page = 1
+            for bnd, pn in boundaries:
+                if char_offset >= bnd:
+                    page = pn
+                else:
+                    break
+            return page
+
         for article in articles:
             content = article.get("content_ar") or article.get("content_en") or ""
-            if content:
-                pos = full_text.find(content[:100])
-                if pos >= 0:
-                    article["page_start"] = self._find_page(pos, page_boundaries)
-                    end_pos = pos + len(content)
-                    article["page_end"] = self._find_page(end_pos, page_boundaries)
+            if not content:
+                continue
+            # Find where content appears in full_text
+            snippet = content[:80]
+            pos = full_text.find(snippet)
+            if pos < 0:
+                continue
+            article["page_start"] = find_page(pos)
+            article["page_end"] = find_page(pos + len(content))
+
         return articles
 
-    def _find_page(self, offset: int, boundaries: list) -> int:
-        page = 1
-        for bnd_offset, pn in boundaries:
-            if offset >= bnd_offset:
-                page = pn
-        return page
-
-    def _build_toc(self, articles: list) -> list:
-        """Build table of contents grouped by chapter."""
-        toc = []
-        current_chapter = None
-        for article in articles:
-            ch = article.get("chapter_number")
-            if ch != current_chapter:
-                toc.append({
-                    "chapter_number": ch,
-                    "chapter_title_ar": article.get("chapter_title_ar"),
-                    "chapter_title_en": article.get("chapter_title_en"),
-                    "articles": [],
-                })
-                current_chapter = ch
-            if toc:
-                toc[-1]["articles"].append(article["article_number"])
-        return toc
+    # ─── Helpers ───
 
     def _avg_confidence(self, pages: list) -> float:
         confs = [p.get("confidence", 1.0) for p in pages]
