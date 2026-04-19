@@ -72,7 +72,9 @@
       "Bash(grep -oE \"<h1[^<]*</h1>|error.{0,80}\")",
       "Bash(curl -s http://localhost:3000/admin/library/14fdc80b-10b5-464c-a54d-0f5e0b5525f2)",
       "Bash(curl -sI http://localhost:3000/admin/bulk-upload)",
-      "Bash(grep -oE 'ModuleNotFoundError|SyntaxError|Unexpected|Failed to compile|Module not found.{0,100}')"
+      "Bash(grep -oE 'ModuleNotFoundError|SyntaxError|Unexpected|Failed to compile|Module not found.{0,100}')",
+      "Bash(curl -sI http://localhost:3000/search)",
+      "Bash(curl -s \"http://localhost:3000/search?q=banking\")"
     ]
   }
 }
