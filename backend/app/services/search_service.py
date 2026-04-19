@@ -187,19 +187,27 @@ def _reciprocal_rank_fusion(
 async def _enrich_results(
     db: AsyncSession, results: list[dict]
 ) -> list[dict]:
-    """Enrich search results with document metadata."""
+    """Enrich search results with document + chunk metadata + full content."""
     if not results:
         return []
 
-    # Collect unique document IDs
-    doc_ids = set()
+    # Collect unique document IDs and chunk IDs
+    doc_ids: set[str] = set()
+    chunk_ids: set[str] = set()
     for r in results:
         doc_id = r.get("payload", {}).get("document_id") or r.get("document_id")
         if doc_id:
             doc_ids.add(doc_id)
+        # Vector results have Qdrant point ID as `id`, BM25 has chunk row UUID as chunk_id
+        chunk_id = r.get("payload", {}).get("chunk_id") or r.get("chunk_id")
+        qdrant_id = r.get("id")  # Qdrant point ID (= chunks.qdrant_point_id)
+        if chunk_id:
+            chunk_ids.add(chunk_id)
+        if qdrant_id and qdrant_id != chunk_id:
+            chunk_ids.add(qdrant_id)
 
     # Fetch document metadata
-    doc_map = {}
+    doc_map: dict[str, dict] = {}
     if doc_ids:
         from sqlalchemy import select
 
@@ -217,25 +225,93 @@ async def _enrich_results(
                 "issue_date": str(doc.issue_date) if doc.issue_date else None,
             }
 
+    # Fetch chunk content (by Chunk.id OR Chunk.qdrant_point_id)
+    from sqlalchemy import select, or_
+    chunk_map: dict[str, Chunk] = {}
+    if chunk_ids:
+        chunk_uuids = []
+        for c in chunk_ids:
+            try:
+                chunk_uuids.append(uuid.UUID(c))
+            except Exception:
+                continue
+
+        chunk_stmt = select(Chunk).where(
+            or_(
+                Chunk.id.in_(chunk_uuids) if chunk_uuids else False,
+                Chunk.qdrant_point_id.in_([str(c) for c in chunk_ids]),
+            )
+        )
+        chunk_result = await db.execute(chunk_stmt)
+        for c in chunk_result.scalars():
+            chunk_map[str(c.id)] = c
+            if c.qdrant_point_id:
+                chunk_map[c.qdrant_point_id] = c
+
     # Enrich each result
     enriched = []
     for r in results:
         doc_id = r.get("payload", {}).get("document_id") or r.get("document_id")
         doc_meta = doc_map.get(doc_id, {})
 
-        enriched.append(
-            {
-                "chunk_id": r.get("payload", {}).get("chunk_id") or r.get("chunk_id"),
-                "document_id": doc_id,
-                "score": r.get("rrf_score", r.get("score", 0)),
-                "article_number": r.get("payload", {}).get("article_number") or r.get("article_number"),
-                "section_title": r.get("payload", {}).get("section_title") or r.get("section_title"),
-                "page_number": r.get("payload", {}).get("page_number") or r.get("page_number"),
-                "content_en": r.get("content_en"),
-                "content_ar": r.get("content_ar"),
-                **doc_meta,
-            }
-        )
+        # Resolve chunk — try each candidate key against chunk_map (first hit wins).
+        # Qdrant payload.chunk_id may be stale if chunks were re-ingested without
+        # re-upserting vectors, so we must try point id + chunk_id and use whichever
+        # actually exists in the DB.
+        candidate_keys = [
+            r.get("id"),  # Qdrant point id (= chunks.qdrant_point_id, canonical)
+            r.get("payload", {}).get("chunk_id"),
+            r.get("chunk_id"),
+        ]
+        chunk = None
+        chunk_key = None
+        for k in candidate_keys:
+            if k and k in chunk_map:
+                chunk = chunk_map[k]
+                chunk_key = k
+                break
+        if chunk_key is None:
+            # No DB match — fall back to whatever key we have (for output only)
+            chunk_key = next((k for k in candidate_keys if k), None)
+
+        # Prefer chunk data (from DB) over whatever was in the result dict
+        if chunk:
+            content_en = chunk.content_en or chunk.content
+            content_ar = chunk.content_ar
+            article_number = chunk.article_number
+            section_title = chunk.section_title
+            page_number = chunk.page_number
+            # If EN content is empty but generic content exists, use it
+            if not content_en and chunk.content:
+                content_en = chunk.content
+        else:
+            # Fallback to whatever was in the raw result
+            content_en = r.get("content_en")
+            content_ar = r.get("content_ar")
+            article_number = (
+                r.get("payload", {}).get("article_number")
+                or r.get("article_number")
+            )
+            section_title = (
+                r.get("payload", {}).get("section_title")
+                or r.get("section_title")
+            )
+            page_number = (
+                r.get("payload", {}).get("page_number")
+                or r.get("page_number")
+            )
+
+        enriched.append({
+            "chunk_id": str(chunk.id) if chunk else chunk_key,
+            "document_id": doc_id,
+            "score": r.get("rrf_score", r.get("score", 0)),
+            "article_number": article_number,
+            "section_title": section_title,
+            "page_number": page_number,
+            "content_en": content_en,
+            "content_ar": content_ar,
+            **doc_meta,
+        })
 
     return enriched
 
