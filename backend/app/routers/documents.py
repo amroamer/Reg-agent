@@ -13,10 +13,18 @@ from app.models.chunk import Chunk
 from app.models.document import Document, DocumentStatus, SourceAuthority
 from app.models.user import User
 from app.schemas.document import (
+    ArticlesResponse,
+    ArticleSummary,
+    ChapterGroup,
     ChunkResponse,
     DocumentDetailResponse,
     DocumentListResponse,
     DocumentResponse,
+    DocumentUpdate,
+    DuplicateInfo,
+    FileValidationResponse,
+    IngestionLogResponse,
+    IngestionStageLog,
 )
 from app.services.auth_service import get_current_user, get_optional_user, require_admin
 
@@ -98,6 +106,8 @@ async def upload_document(
     )
     db.add(doc)
     await db.flush()
+    # Commit so background thread (sync session) can see the new document
+    await db.commit()
 
     # Dispatch ingestion: try Celery first, fall back to sync in background thread
     try:
@@ -108,8 +118,11 @@ async def upload_document(
     except Exception as e:
         logger.warning("Celery unavailable (%s), running ingestion in background thread", e)
         import threading
+        import time as _time
 
         def _run_sync_ingest(did: str):
+            # Small delay to ensure the async transaction has fully committed
+            _time.sleep(0.5)
             try:
                 from worker.tasks.ingest import ingest_document as _ingest
                 _ingest(did)
@@ -365,7 +378,13 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ):
-    """Delete a document and all its chunks (admin only)."""
+    """Delete a document and all its chunks (admin only).
+
+    Cascade order:
+    1. Delete Qdrant vectors (by document_id filter)
+    2. Delete PDF, JSON, Markdown files from disk
+    3. Delete DB record (cascades to chunks, articles, cross_refs, ingestion_queue)
+    """
     result = await db.execute(
         select(Document).where(Document.id == document_id)
     )
@@ -374,17 +393,496 @@ async def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Delete vectors from Qdrant
+    # 1. Delete vectors from Qdrant
     try:
         from app.services.qdrant_service import delete_by_document_id
 
         delete_by_document_id(str(document_id))
+        logger.info("Deleted Qdrant vectors for doc %s", document_id)
     except Exception as e:
         logger.warning("Failed to delete Qdrant vectors: %s", e)
 
-    # Delete file from disk
-    if doc.file_path and os.path.exists(doc.file_path):
-        os.remove(doc.file_path)
+    # 2. Delete files from disk
+    for path_attr in ("file_path", "json_path", "markdown_path"):
+        path = getattr(doc, path_attr, None)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                logger.info("Deleted %s: %s", path_attr, path)
+            except Exception as e:
+                logger.warning("Failed to delete %s: %s", path, e)
 
-    # Delete from DB (cascades to chunks)
+    # 3. Delete from DB (cascades)
     await db.delete(doc)
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Pre-upload validation
+# ════════════════════════════════════════════════════════════════
+
+@router.post("/validate", response_model=FileValidationResponse)
+async def validate_upload(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Validate a PDF before full upload. Returns page count, language, duplicate info, auto-detected metadata."""
+    import hashlib
+    import io
+
+    issues: list[str] = []
+
+    # Check extension
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        issues.append(f"Only PDF files are accepted. Got: {ext or 'unknown'}")
+        return FileValidationResponse(valid=False, issues=issues)
+
+    # Read file (up to MAX_FILE_SIZE+1)
+    content = await file.read()
+    size_mb = len(content) / (1024 * 1024)
+
+    if len(content) > MAX_FILE_SIZE:
+        issues.append(f"File is too large ({size_mb:.1f} MB). Maximum is 50 MB.")
+        return FileValidationResponse(valid=False, issues=issues, file_size_mb=round(size_mb, 2))
+
+    # Check PDF magic bytes
+    if content[:4] != b"%PDF":
+        issues.append("This file is not a valid PDF. It may be corrupted or renamed.")
+        return FileValidationResponse(valid=False, issues=issues, file_size_mb=round(size_mb, 2))
+
+    # Compute hash
+    file_hash = hashlib.sha256(content).hexdigest()
+
+    # Check duplicate
+    dup_info = DuplicateInfo()
+    dup_result = await db.execute(
+        select(Document).where(Document.file_hash == file_hash)
+    )
+    dup_doc = dup_result.scalar_one_or_none()
+    if dup_doc:
+        dup_info = DuplicateInfo(
+            found=True,
+            existing_document_id=str(dup_doc.id),
+            existing_title=dup_doc.title_en or dup_doc.title_ar or "Untitled",
+            uploaded_at=dup_doc.created_at,
+        )
+
+    # Probe with pdfplumber
+    page_count = None
+    is_scanned = False
+    detected_language = None
+    auto_meta = {}
+
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            page_count = len(pdf.pages)
+
+            # Sample first 3 pages for text density + language
+            sample_pages = pdf.pages[: min(3, page_count)]
+            total_chars = 0
+            sample_text = ""
+            for p in sample_pages:
+                t = p.extract_text() or ""
+                total_chars += len(t)
+                sample_text += t + "\n"
+
+            avg_chars = total_chars / max(len(sample_pages), 1)
+            is_scanned = avg_chars < 50
+
+            # Language detection via character ranges
+            if sample_text.strip():
+                import re
+
+                arabic_chars = len(re.findall(r"[\u0600-\u06FF]", sample_text))
+                latin_chars = len(re.findall(r"[a-zA-Z]", sample_text))
+                total = arabic_chars + latin_chars
+                if total > 0:
+                    ar_ratio = arabic_chars / total
+                    if ar_ratio > 0.8:
+                        detected_language = "ar"
+                    elif ar_ratio < 0.2:
+                        detected_language = "en"
+                    else:
+                        detected_language = "bilingual"
+
+                # Auto-detect title from first page (simple heuristic: first non-trivial line)
+                first_page_text = sample_pages[0].extract_text() if sample_pages else ""
+                if first_page_text:
+                    lines = [ln.strip() for ln in first_page_text.split("\n") if ln.strip()]
+                    if lines:
+                        first_line = lines[0][:200]
+                        # Detect if first line is Arabic or English
+                        if any("\u0600" <= c <= "\u06FF" for c in first_line):
+                            auto_meta["title_ar"] = first_line
+                        else:
+                            auto_meta["title_en"] = first_line
+
+        # Auto-detect source and doc number from filename
+        from app.services.metadata_parser import (
+            detect_source_from_filename,
+            extract_doc_number,
+        )
+        auto_src = detect_source_from_filename(filename)
+        if auto_src:
+            auto_meta["source"] = auto_src
+        auto_num = extract_doc_number(filename)
+        if auto_num:
+            auto_meta["document_number"] = auto_num
+
+    except Exception as e:
+        issues.append(f"PDF appears valid but could not be parsed: {e}")
+
+    return FileValidationResponse(
+        valid=len(issues) == 0,
+        issues=issues,
+        file_size_mb=round(size_mb, 2),
+        page_count=page_count,
+        is_scanned=is_scanned,
+        detected_language=detected_language,
+        file_hash=file_hash,
+        duplicate=dup_info,
+        auto_detected_metadata=auto_meta,
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Edit metadata
+# ════════════════════════════════════════════════════════════════
+
+@router.patch("/{document_id}", response_model=DocumentResponse)
+async def update_document(
+    document_id: uuid.UUID,
+    body: DocumentUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Update document metadata (admin only)."""
+    result = await db.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(doc, field, value)
+
+    await db.flush()
+    return doc
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Retry & Reprocess
+# ════════════════════════════════════════════════════════════════
+
+def _dispatch_ingest(doc_id: str):
+    """Try Celery first, fall back to background thread."""
+    try:
+        from worker.tasks.ingest import ingest_document
+        ingest_document.delay(doc_id)
+    except Exception as e:
+        logger.warning("Celery unavailable (%s), using background thread", e)
+        import threading
+        import time as _time
+
+        def _run(did):
+            _time.sleep(0.5)
+            try:
+                from worker.tasks.ingest import ingest_document as _ingest
+                _ingest(did)
+            except Exception as ex:
+                logger.error("Background ingestion failed: %s", ex)
+
+        threading.Thread(target=_run, args=(doc_id,), daemon=True).start()
+
+
+@router.post("/{document_id}/retry", response_model=DocumentResponse)
+async def retry_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Retry ingestion for a failed document."""
+    result = await db.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != DocumentStatus.FAILED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only retry FAILED documents. Current status: {doc.status.value}",
+        )
+
+    doc.status = DocumentStatus.PENDING
+    doc.error_message = None
+    doc.ingestion_started_at = None
+    doc.ingestion_completed_at = None
+    await db.flush()
+    await db.commit()
+
+    _dispatch_ingest(str(document_id))
+    return doc
+
+
+@router.post("/{document_id}/reprocess", response_model=DocumentResponse)
+async def reprocess_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Force re-run of the full ingestion pipeline (admin only). Deletes old chunks + vectors first."""
+    result = await db.execute(
+        select(Document).where(Document.id == document_id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete Qdrant vectors
+    try:
+        from app.services.qdrant_service import delete_by_document_id
+        delete_by_document_id(str(document_id))
+    except Exception as e:
+        logger.warning("Failed to delete Qdrant vectors during reprocess: %s", e)
+
+    # Delete old chunks and articles (cascade via ORM)
+    from app.models.article import Article
+    await db.execute(
+        Chunk.__table__.delete().where(Chunk.document_id == document_id)
+    )
+    await db.execute(
+        Article.__table__.delete().where(Article.document_id == document_id)
+    )
+
+    doc.status = DocumentStatus.PENDING
+    doc.error_message = None
+    doc.total_articles = None
+    doc.total_chunks = 0
+    doc.ingestion_started_at = None
+    doc.ingestion_completed_at = None
+    await db.flush()
+    await db.commit()
+
+    _dispatch_ingest(str(document_id))
+    return doc
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Serve PDF / JSON / Markdown
+# ════════════════════════════════════════════════════════════════
+
+@router.get("/{document_id}/pdf")
+async def get_pdf(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Stream the original PDF file."""
+    from fastapi.responses import FileResponse
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc or not doc.file_path or not os.path.exists(doc.file_path):
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    return FileResponse(
+        doc.file_path,
+        media_type="application/pdf",
+        filename=f"{doc.document_number or doc.id}.pdf",
+    )
+
+
+@router.get("/{document_id}/json")
+async def get_json(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Serve the structured JSON file."""
+    from fastapi.responses import FileResponse
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc or not doc.json_path or not os.path.exists(doc.json_path):
+        raise HTTPException(status_code=404, detail="JSON not generated for this document")
+
+    return FileResponse(
+        doc.json_path,
+        media_type="application/json",
+        filename=f"{doc.document_number or doc.id}.json",
+    )
+
+
+@router.get("/{document_id}/markdown")
+async def get_markdown(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Serve the generated Markdown file."""
+    from fastapi.responses import FileResponse
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc or not doc.markdown_path or not os.path.exists(doc.markdown_path):
+        raise HTTPException(status_code=404, detail="Markdown not generated")
+
+    return FileResponse(
+        doc.markdown_path,
+        media_type="text/markdown",
+        filename=f"{doc.document_number or doc.id}.md",
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Articles & Ingestion Log
+# ════════════════════════════════════════════════════════════════
+
+@router.get("/{document_id}/articles", response_model=ArticlesResponse)
+async def get_articles(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Get articles grouped by chapter."""
+    from app.models.article import Article
+
+    result = await db.execute(
+        select(Article)
+        .where(Article.document_id == document_id)
+        .order_by(Article.article_index)
+    )
+    articles = result.scalars().all()
+
+    # Group by chapter
+    chapters: dict[str, ChapterGroup] = {}
+    for a in articles:
+        key = a.chapter_number or "_"
+        if key not in chapters:
+            chapters[key] = ChapterGroup(
+                chapter_number=a.chapter_number,
+                chapter_title_ar=a.chapter_title_ar,
+                chapter_title_en=a.chapter_title_en,
+                articles=[],
+            )
+        chapters[key].articles.append(ArticleSummary.model_validate(a))
+
+    return ArticlesResponse(
+        chapters=list(chapters.values()),
+        total_articles=len(articles),
+    )
+
+
+@router.get("/{document_id}/ingestion-log", response_model=IngestionLogResponse)
+async def get_ingestion_log(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Get ingestion stage log (from IngestionQueue.stage_progress if present, else from IngestionError)."""
+    from app.models.ingestion_batch import IngestionQueue
+    from app.models.ingestion_error import IngestionError
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Find the latest queue item for this doc (if batch upload)
+    q_result = await db.execute(
+        select(IngestionQueue)
+        .where(IngestionQueue.document_id == document_id)
+        .order_by(IngestionQueue.created_at.desc())
+    )
+    queue_item = q_result.scalars().first()
+
+    stages: list[IngestionStageLog] = []
+    if queue_item and queue_item.stage_progress:
+        for stage_name in ["extraction", "parsing", "markdown", "chunking", "embedding", "enrichment"]:
+            info = queue_item.stage_progress.get(stage_name, {})
+            if info:
+                stages.append(IngestionStageLog(
+                    stage=stage_name,
+                    status=info.get("status", "pending"),
+                    duration_s=info.get("duration_s"),
+                ))
+
+    # Errors
+    err_result = await db.execute(
+        select(IngestionError).where(IngestionError.document_id == document_id)
+    )
+    errors = [
+        {
+            "phase": e.phase,
+            "error_message": e.error_message,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in err_result.scalars()
+    ]
+
+    total_duration = None
+    if doc.ingestion_started_at and doc.ingestion_completed_at:
+        total_duration = (doc.ingestion_completed_at - doc.ingestion_started_at).total_seconds()
+
+    return IngestionLogResponse(
+        document_id=doc.id,
+        document_status=doc.status.value,
+        ingestion_started_at=doc.ingestion_started_at,
+        ingestion_completed_at=doc.ingestion_completed_at,
+        total_duration_s=total_duration,
+        stages=stages,
+        errors=errors,
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# NEW: Single-doc SSE stream
+# ════════════════════════════════════════════════════════════════
+
+@router.get("/{document_id}/ingestion-events")
+async def ingestion_events(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """SSE stream for single-document ingestion progress."""
+    import json as _json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services.sse_emitter import subscribe
+
+    async def event_stream():
+        # Initial snapshot
+        result = await db.execute(select(Document).where(Document.id == document_id))
+        doc = result.scalar_one_or_none()
+        if doc:
+            snapshot = {
+                "document_id": str(doc.id),
+                "status": doc.status.value,
+                "total_articles": doc.total_articles or 0,
+                "total_chunks": doc.total_chunks or 0,
+                "page_count": doc.page_count,
+                "error_message": doc.error_message,
+            }
+            yield f"event: snapshot\ndata: {_json.dumps(snapshot)}\n\n"
+
+        # Subscribe to single-doc channel (format: "doc:{document_id}")
+        async for msg in subscribe(f"doc:{document_id}"):
+            yield msg
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

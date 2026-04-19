@@ -22,7 +22,8 @@ const NAV_ITEMS = [
 
 const ADMIN_ITEMS = [
   { href: "/admin", icon: LayoutDashboard, labelKey: "dashboard" as const },
-  { href: "/admin/documents", icon: Upload, labelKey: "uploadDocument" as const },
+  { href: "/admin/library", icon: FileText, labelKey: "documents" as const },
+  { href: "/admin/upload", icon: Upload, labelKey: "uploadDocument" as const },
   { href: "/admin/bulk-upload", icon: Files, labelKey: "bulkUpload" as const },
   {
     href: "/admin/cross-references",

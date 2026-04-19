@@ -58,6 +58,87 @@ export interface Chunk {
 export interface DocumentDetail extends Document {
   chunks: Chunk[];
   chunks_count: number;
+  total_articles: number | null;
+  total_chunks: number | null;
+  json_path: string | null;
+  markdown_path: string | null;
+  ingestion_started_at: string | null;
+  ingestion_completed_at: string | null;
+}
+
+export interface DocumentUpdate {
+  title_en?: string | null;
+  title_ar?: string | null;
+  document_number?: string | null;
+  issue_date?: string | null;
+  effective_date?: string | null;
+  status?: DocumentStatus;
+  source_url?: string | null;
+}
+
+export interface FileValidationResponse {
+  valid: boolean;
+  issues: string[];
+  file_size_mb: number;
+  page_count: number | null;
+  is_scanned: boolean;
+  detected_language: string | null;
+  file_hash: string | null;
+  duplicate: {
+    found: boolean;
+    existing_document_id?: string | null;
+    existing_title?: string | null;
+    uploaded_at?: string | null;
+  };
+  auto_detected_metadata: {
+    title_en?: string | null;
+    title_ar?: string | null;
+    document_number?: string | null;
+    source?: string | null;
+  };
+}
+
+export interface ArticleSummary {
+  id: string;
+  article_index: number;
+  chapter_number: string | null;
+  chapter_title_ar: string | null;
+  chapter_title_en: string | null;
+  article_number: string | null;
+  article_title_ar: string | null;
+  article_title_en: string | null;
+  page_start: number | null;
+  page_end: number | null;
+}
+
+export interface ChapterGroup {
+  chapter_number: string | null;
+  chapter_title_ar: string | null;
+  chapter_title_en: string | null;
+  articles: ArticleSummary[];
+}
+
+export interface ArticlesResponse {
+  chapters: ChapterGroup[];
+  total_articles: number;
+}
+
+export interface IngestionStageLog {
+  stage: string;
+  status: string;
+  duration_s: number | null;
+  error: string | null;
+}
+
+export interface IngestionLogResponse {
+  document_id: string;
+  document_status: string;
+  ingestion_started_at: string | null;
+  ingestion_completed_at: string | null;
+  total_duration_s: number | null;
+  stages: IngestionStageLog[];
+  errors: Array<{ phase: string; error_message: string; created_at: string }>;
+  warnings: string[];
 }
 
 export interface DocumentListResponse {

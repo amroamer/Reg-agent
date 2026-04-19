@@ -36,7 +36,8 @@ def embed_and_store_chunks(
     all_points = []
     for batch_start in range(0, len(chunks), BATCH_SIZE):
         batch = chunks[batch_start : batch_start + BATCH_SIZE]
-        texts = [c["text"] for c in batch]
+        # New chunker uses "content", old one used "text"
+        texts = [c.get("content") or c.get("text", "") for c in batch]
 
         # Embed the batch
         vectors = embedding_service.embed_batch(texts, is_query=False)

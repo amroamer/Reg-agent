@@ -70,19 +70,20 @@ def ingest_document(self, document_id: str, queue_item_id: str | None = None, ba
                     session.commit()
             except Exception:
                 pass
-        if batch_id:
-            try:
-                from app.services.sse_emitter import sync_publish
-                sync_publish(batch_id, "stage_changed", {
-                    "document_id": document_id,
-                    "queue_item_id": queue_item_id,
-                    "stage": stage,
-                })
-            except Exception:
-                pass
+        try:
+            from app.services.sse_emitter import sync_publish
+            # Emit to batch channel if in batch, else to single-doc channel
+            channel = batch_id if batch_id else f"doc:{document_id}"
+            sync_publish(channel, "stage_changed", {
+                "document_id": document_id,
+                "queue_item_id": queue_item_id,
+                "stage": stage,
+            })
+        except Exception:
+            pass
 
     def _complete_stage(stage: str, duration: float, session=None):
-        """Mark a stage as completed in the queue item."""
+        """Mark a stage as completed in the queue item + emit SSE."""
         if queue_item_id and session:
             try:
                 from app.models.ingestion_batch import IngestionQueue
@@ -96,6 +97,16 @@ def ingest_document(self, document_id: str, queue_item_id: str | None = None, ba
                     session.commit()
             except Exception:
                 pass
+        try:
+            from app.services.sse_emitter import sync_publish
+            channel = batch_id if batch_id else f"doc:{document_id}"
+            sync_publish(channel, "stage_completed", {
+                "document_id": document_id,
+                "stage": stage,
+                "duration_s": round(duration, 1),
+            })
+        except Exception:
+            pass
 
     session = _get_sync_session()
     try:
@@ -276,6 +287,21 @@ def ingest_document(self, document_id: str, queue_item_id: str | None = None, ba
             "warnings": extraction.get("warnings", []),
         }
         logger.info("[%s] INGESTION COMPLETE: %s", document_id[:8], json.dumps(summary))
+
+        # Emit final "document_completed" event (for both single-doc and batch)
+        try:
+            from app.services.sse_emitter import sync_publish
+            channel = batch_id if batch_id else f"doc:{document_id}"
+            sync_publish(channel, "document_completed", {
+                "document_id": document_id,
+                "total_articles": summary.get("total_articles", 0),
+                "total_chunks": summary.get("total_chunks", 0),
+                "total_pages": summary.get("total_pages", 0),
+                "timing": summary.get("timing", {}),
+            })
+        except Exception:
+            pass
+
         return summary
 
     except Exception as e:
@@ -286,6 +312,17 @@ def ingest_document(self, document_id: str, queue_item_id: str | None = None, ba
             session.commit()
         except Exception:
             session.rollback()
+
+        # Emit "document_failed" event
+        try:
+            from app.services.sse_emitter import sync_publish
+            channel = batch_id if batch_id else f"doc:{document_id}"
+            sync_publish(channel, "document_failed", {
+                "document_id": document_id,
+                "error": str(e),
+            })
+        except Exception:
+            pass
         raise
     finally:
         session.close()
