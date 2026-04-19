@@ -1,7 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronDown, Copy, ExternalLink, Link2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  ExternalLink,
+  Link2,
+} from "lucide-react";
 import { useState } from "react";
 import type { SearchResultItem } from "@/lib/types";
 
@@ -62,19 +68,48 @@ function formatArticleLabel(n: string | null | undefined): string | null {
   return `Article ${trimmed}`;
 }
 
+const PREVIEW_CHARS = 320;
+
+/** Render text with paragraph breaks preserved + query term highlighted. */
+function renderParagraphs(text: string, term: string): React.ReactNode {
+  // Split on blank lines to preserve paragraph breaks; collapse single newlines
+  // inside paragraphs (numbered lists, etc. stay on their own line).
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return paragraphs.map((p, pi) => {
+    // Keep single-newline structure (e.g. numbered lists) by splitting per line.
+    const lines = p.split(/\n/).map((l) => l.trim()).filter(Boolean);
+    return (
+      <p key={pi} className={pi > 0 ? "mt-3" : undefined}>
+        {lines.map((line, li) => (
+          <span key={li}>
+            {li > 0 && <br />}
+            {highlightTerm(line, term)}
+          </span>
+        ))}
+      </p>
+    );
+  });
+}
+
 function MatchRow({
   match,
   queryTerm,
-  expanded,
+  defaultExpanded = false,
 }: {
   match: SearchResultItem;
   queryTerm: string;
-  expanded?: boolean;
+  defaultExpanded?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
   const rawContent = match.content_en || match.content_ar || "";
   const content = stripHeader(rawContent);
-  const maxLen = expanded ? content.length : 320;
-  const snippet = content.slice(0, maxLen);
+  const canTruncate = content.length > PREVIEW_CHARS;
+  const showFull = expanded || !canTruncate;
 
   const articleLabel = formatArticleLabel(match.article_number);
   // Prefer explicit article title, then section title, then chapter title
@@ -87,6 +122,7 @@ function MatchRow({
     null;
 
   const hasMeta = Boolean(articleLabel || subTitle || match.page_number);
+  const previewSnippet = canTruncate ? content.slice(0, PREVIEW_CHARS) : content;
 
   return (
     <div className="pt-4">
@@ -109,13 +145,42 @@ function MatchRow({
           )}
         </p>
       )}
-      <p
-        className="text-[14px] leading-relaxed text-ink"
-        dir="auto"
-      >
-        &ldquo;{highlightTerm(snippet, queryTerm)}
-        {maxLen < content.length && "…"}&rdquo;
-      </p>
+
+      {showFull ? (
+        <div
+          className="text-[14px] leading-relaxed text-ink space-y-0"
+          dir="auto"
+        >
+          <span className="text-ink-muted me-1">&ldquo;</span>
+          {renderParagraphs(content, queryTerm)}
+          <span className="text-ink-muted ms-1">&rdquo;</span>
+        </div>
+      ) : (
+        <p className="text-[14px] leading-relaxed text-ink" dir="auto">
+          &ldquo;{highlightTerm(previewSnippet, queryTerm)}…&rdquo;
+        </p>
+      )}
+
+      {canTruncate && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-2 inline-flex items-center gap-1 text-[11px] text-ink-soft hover:text-ink font-medium"
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <>
+              <ChevronUp className="w-3.5 h-3.5" />
+              Show less
+            </>
+          ) : (
+            <>
+              <ChevronDown className="w-3.5 h-3.5" />
+              Show full text ({content.length.toLocaleString()} chars)
+            </>
+          )}
+        </button>
+      )}
+
       <div className="flex items-center gap-4 mt-3 text-[11px] text-ink-muted">
         <Link
           href={`/admin/library/${match.document_id}`}
@@ -126,11 +191,7 @@ function MatchRow({
         </Link>
         <button
           onClick={() => {
-            const cite = [
-              match.document_number,
-              articleLabel,
-              subTitle,
-            ]
+            const cite = [match.document_number, articleLabel, subTitle]
               .filter(Boolean)
               .join(" · ");
             navigator.clipboard.writeText(cite);
