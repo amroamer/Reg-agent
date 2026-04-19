@@ -11,10 +11,12 @@ export default function AdminLayout({
 }) {
   const pathname = usePathname();
 
-  // The Document Library is designed to occupy the full viewport with its
-  // own top bar + sidebar (ported from the Claude Design handoff). Skip the
-  // default admin chrome here so the library's shell isn't double-rendered.
-  const ownsChrome = pathname?.startsWith("/admin/library");
+  // The Dashboard and Document Library are designed to occupy the full
+  // viewport with their own top bar + sidebar (ported from the Claude
+  // Design handoff). Skip the default admin chrome on those routes so the
+  // shells aren't double-rendered.
+  const ownsChrome =
+    pathname === "/admin" || pathname?.startsWith("/admin/library");
 
   if (ownsChrome) return <>{children}</>;
 

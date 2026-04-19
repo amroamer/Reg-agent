@@ -239,6 +239,71 @@ export interface AdminStats {
   pending_cross_refs: number;
 }
 
+// ── Admin Dashboard ──────────────────────────────
+
+export interface DashboardKpi {
+  id: string;
+  label: string;
+  value: number;
+  delta: number;
+  delta_unit?: string | null;
+  delta_label: string;
+  trend: number[];
+  icon: string;
+  tone?: string | null;
+}
+
+export interface DashboardBucket {
+  id: string;
+  label?: string;
+  count: number;
+  color: string;
+}
+
+export interface DashboardActivity {
+  kind: "upload" | "reindex" | "fail" | "search" | string;
+  who: string;
+  what: string;  // may contain HTML <em>…</em>
+  src?: string | null;
+  detail?: string | null;
+  when: string;
+  document_id?: string | null;
+}
+
+export interface DashboardTopQuery {
+  q: string;
+  count: number;
+  trend: number;
+}
+
+export interface DashboardFailed {
+  title: string;
+  code?: string | null;
+  error?: string | null;
+  document_id: string;
+}
+
+export interface DashboardHealth {
+  label: string;
+  value: string;
+  state: "ok" | "warn" | "err" | string;
+}
+
+export interface DashboardResponse {
+  user: { name: string; initials: string };
+  kpis: DashboardKpi[];
+  ingestion: number[];
+  searches: number[];
+  source: DashboardBucket[];
+  status: DashboardBucket[];
+  types: DashboardBucket[];
+  activity: DashboardActivity[];
+  top_queries: DashboardTopQuery[];
+  failed: DashboardFailed[];
+  health: DashboardHealth[];
+  range_days: number;
+}
+
 // ── Batch Upload ─────────────────────────────────
 
 export type BatchStatus =
