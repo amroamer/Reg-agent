@@ -909,6 +909,43 @@ async def get_articles(
     )
 
 
+@router.get("/{document_id}/articles/{article_index}")
+async def get_article(
+    document_id: uuid.UUID,
+    article_index: int,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """Get a single article with full content (EN + AR)."""
+    from app.models.article import Article
+
+    result = await db.execute(
+        select(Article)
+        .where(
+            Article.document_id == document_id,
+            Article.article_index == article_index,
+        )
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    return {
+        "id": str(article.id),
+        "article_index": article.article_index,
+        "chapter_number": article.chapter_number,
+        "chapter_title_ar": article.chapter_title_ar,
+        "chapter_title_en": article.chapter_title_en,
+        "article_number": article.article_number,
+        "article_title_ar": article.article_title_ar,
+        "article_title_en": article.article_title_en,
+        "content_ar": article.content_ar,
+        "content_en": article.content_en,
+        "page_start": article.page_start,
+        "page_end": article.page_end,
+    }
+
+
 @router.get("/{document_id}/ingestion-log", response_model=IngestionLogResponse)
 async def get_ingestion_log(
     document_id: uuid.UUID,

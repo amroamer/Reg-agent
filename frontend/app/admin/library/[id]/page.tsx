@@ -45,6 +45,17 @@ export default function AdminDocumentDetailPage() {
   const [expandedChapters, setExpandedChapters] = useState<Set<string>>(
     new Set(),
   );
+  const [selectedArticle, setSelectedArticle] = useState<{
+    id: string;
+    article_index: number;
+    article_number: string | null;
+    article_title_ar: string | null;
+    article_title_en: string | null;
+    content_ar: string | null;
+    content_en: string | null;
+    page_start: number | null;
+    page_end: number | null;
+  } | null>(null);
 
   const fetchDoc = useCallback(async () => {
     try {
@@ -312,7 +323,20 @@ export default function AdminDocumentDetailPage() {
                   {expanded && (
                     <div className="border-t border-gray-100 divide-y divide-gray-100">
                       {ch.articles.map((a) => (
-                        <div key={a.id} className="px-4 py-2 ps-10 text-sm">
+                        <button
+                          key={a.id}
+                          onClick={async () => {
+                            try {
+                              const { data } = await api.get(
+                                `/documents/${docId}/articles/${a.article_index}`,
+                              );
+                              setSelectedArticle(data);
+                            } catch {
+                              // silent
+                            }
+                          }}
+                          className="w-full px-4 py-2 ps-10 text-sm text-start hover:bg-blue-50 transition"
+                        >
                           <div className="flex items-center justify-between">
                             <span className="font-medium text-gray-700">
                               {a.article_number
@@ -325,11 +349,11 @@ export default function AdminDocumentDetailPage() {
                             </span>
                           </div>
                           {a.article_title_ar && (
-                            <p className="text-xs text-gray-500 font-arabic">
+                            <p className="text-xs text-gray-500 font-arabic mt-0.5">
                               {a.article_title_ar}
                             </p>
                           )}
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -445,6 +469,78 @@ export default function AdminDocumentDetailPage() {
           chunks: doc.total_chunks ?? 0,
         }}
       />
+
+      {/* Article viewer slide-over */}
+      {selectedArticle && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40"
+          onClick={() => setSelectedArticle(null)}
+        >
+          <div
+            className="absolute top-0 end-0 h-full w-full max-w-2xl bg-white shadow-2xl overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white border-b border-gray-200 p-5 flex items-center justify-between z-10">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-gray-500">
+                  Article {selectedArticle.article_number || selectedArticle.article_index + 1}
+                  {selectedArticle.page_start && (
+                    <span className="ms-2">
+                      • pp. {selectedArticle.page_start}–{selectedArticle.page_end}
+                    </span>
+                  )}
+                </p>
+                {selectedArticle.article_title_en && (
+                  <h3 className="font-semibold text-gray-900 mt-1">
+                    {selectedArticle.article_title_en}
+                  </h3>
+                )}
+                {selectedArticle.article_title_ar && (
+                  <p className="text-sm font-arabic text-gray-600 mt-0.5">
+                    {selectedArticle.article_title_ar}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setSelectedArticle(null)}
+                className="p-2 text-gray-400 hover:text-gray-600"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-5 space-y-5">
+              {selectedArticle.content_en && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase mb-2">
+                    English
+                  </p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                    {selectedArticle.content_en}
+                  </p>
+                </div>
+              )}
+              {selectedArticle.content_ar && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase mb-2">
+                    العربية
+                  </p>
+                  <p
+                    className="text-sm text-gray-800 font-arabic whitespace-pre-wrap leading-relaxed"
+                    dir="rtl"
+                  >
+                    {selectedArticle.content_ar}
+                  </p>
+                </div>
+              )}
+              {!selectedArticle.content_en && !selectedArticle.content_ar && (
+                <p className="text-sm text-gray-400 italic">
+                  No content extracted for this article.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

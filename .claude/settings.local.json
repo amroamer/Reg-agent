@@ -64,7 +64,10 @@
       "Bash(curl -s \"http://127.0.0.1:8011/api/documents?search=credit&sort_by=title_en&sort_order=asc\")",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Search results: {d[\\\\\"total\\\\\"]} docs'\\); [print\\(f'  {x[\\\\\"title_en\\\\\"]}'\\) for x in d['documents']]\")",
       "Bash(curl -s http://127.0.0.1:8011/api/documents/processing-status)",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Active docs: {len\\(d\\)}'\\); [print\\(f'  {x[\\\\\"id\\\\\"][:8]} status={x[\\\\\"status\\\\\"]} stage={x[\\\\\"current_stage\\\\\"]}'\\) for x in d]\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Active docs: {len\\(d\\)}'\\); [print\\(f'  {x[\\\\\"id\\\\\"][:8]} status={x[\\\\\"status\\\\\"]} stage={x[\\\\\"current_stage\\\\\"]}'\\) for x in d]\")",
+      "Bash(curl -s http://127.0.0.1:8011/api/documents?page_size=50)",
+      "Bash(read id *)",
+      "Bash(curl -s -X POST http://127.0.0.1:8011/api/documents/__TRACKED_VAR__/reprocess)"
     ]
   }
 }

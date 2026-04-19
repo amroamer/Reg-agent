@@ -68,7 +68,34 @@ class PDFExtractor:
             return avg_chars < SCANNED_THRESHOLD
 
     def _extract_with_pdfplumber(self, pdf_path: str) -> list[dict]:
-        """Extract text using pdfplumber (for digital PDFs)."""
+        """Extract text using PyMuPDF (best Arabic handling) with pdfplumber fallback.
+
+        PyMuPDF correctly handles:
+        - Arabic text with proper character ordering
+        - Subset fonts with CMap (no (cid:XXX) artifacts)
+        - Bilingual PDFs
+        """
+        # Try PyMuPDF first
+        try:
+            import fitz  # PyMuPDF
+
+            pages = []
+            doc = fitz.open(pdf_path)
+            for i in range(len(doc)):
+                page = doc[i]
+                text = page.get_text("text")
+                pages.append({
+                    "page_number": i + 1,
+                    "text": text.strip(),
+                    "tables": [],
+                    "confidence": 1.0,
+                })
+            doc.close()
+            return pages
+        except Exception as e:
+            logger.warning("PyMuPDF extraction failed (%s), falling back to pdfplumber", e)
+
+        # Fallback to pdfplumber
         pages = []
         with pdfplumber.open(pdf_path) as pdf:
             for i, page in enumerate(pdf.pages):
