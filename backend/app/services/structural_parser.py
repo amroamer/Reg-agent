@@ -59,10 +59,40 @@ SECTION_EN_HEADING = re.compile(
     r"^[\s]*(?:Section|SECTION)\s+(\d+(?:[\.\d]+)?)\s*(?:[:\-\u2013\u2014\.]+\s*(.*?))?$",
     re.MULTILINE,
 )
+# Roman-numeral section heading — "I.", "II.", "III." at line start followed by
+# a title. Used by Ministerial Resolutions and SAMA implementation rules that
+# don't use "Article N:" numbering for their own sections (they reference
+# articles of OTHER laws instead).
+# Strict: ≥10-char title on the same line to avoid matching random "I." bullets.
+ROMAN_SECTION_HEADING = re.compile(
+    r"^[\s]*([IVXLCDM]{1,6})\.\s+(.{10,}?)\s*$",
+    re.MULTILINE,
+)
 CHAPTER_EN_HEADING = re.compile(
     r"^[\s]*(?:Chapter|CHAPTER|Part|PART)\s+(\d+(?:[\.\d]+)?)\s*(?:[:\-\u2013\u2014\.]?\s*(.*?))?$",
     re.MULTILINE,
 )
+
+# Valid Roman numerals we accept (I–XX covers most regulatory docs)
+_VALID_ROMANS = {
+    "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+    "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX",
+}
+
+
+def _roman_to_int(s: str) -> int:
+    """Convert a Roman numeral string (I, II, IV, ...) to its integer value."""
+    vals = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    total = 0
+    prev = 0
+    for ch in reversed(s.upper()):
+        v = vals.get(ch, 0)
+        if v < prev:
+            total -= v
+        else:
+            total += v
+        prev = v
+    return total
 
 # Arabic article heading — same flexibility
 ARTICLE_AR_HEADING = re.compile(
@@ -151,6 +181,36 @@ class StructuralParser:
             len(en_articles),
         )
 
+        # Whole-document fallback: if NO structured articles were found but the
+        # document has substantive text, surface the entire body as a single
+        # article so users can still read + search the content (and so the
+        # Articles tab isn't empty). This covers:
+        #   - ministerial decrees with prose-only structure
+        #   - circulars with custom numbering the regex doesn't recognize
+        #   - scanned PDFs where OCR lost heading boundaries
+        warnings = list(extraction_result.get("warnings", []))
+        if not ar_articles and not en_articles and len(full_text.strip()) >= MIN_CONTENT_LEN:
+            synthetic = {
+                "number": "1",
+                "title": document_meta.get("title_en")
+                    or document_meta.get("title_ar")
+                    or "Full Document",
+                "content": full_text.strip(),
+                "chapter_number": None,
+                "chapter_title": None,
+            }
+            if language == "ar":
+                ar_articles = [synthetic]
+            else:
+                en_articles = [synthetic]
+            warnings.append(
+                "No structured headings detected; rendered document as single article"
+            )
+            logger.warning(
+                "No article headings detected in %s — falling back to whole-document article",
+                document_meta.get("title_en") or document_meta.get("title_ar") or "document",
+            )
+
         # Align bilingual
         aligned = self._align_bilingual(ar_articles, en_articles)
 
@@ -190,14 +250,22 @@ class StructuralParser:
                 "total_definitions": 0,
                 "total_appendices": 0,
                 "primary_language": language,
-                "extraction_warnings": extraction_result.get("warnings", []),
+                "extraction_warnings": warnings,
             },
         }
 
     # ─── English parser ───
 
     def _parse_articles_en(self, text: str) -> list[dict]:
-        """Parse English articles using anchored regex (must be at line start)."""
+        """Parse English articles using anchored regex (must be at line start).
+
+        Tries, in order:
+          1. "Article N:" headings  (most common)
+          2. "Section N:" headings  (US-style)
+          3. Roman-numeral headings "I.", "II.", "III." — used by Ministerial
+             Resolutions and implementation-rules docs that don't have their
+             own article numbering.
+        """
         # Find all chapters + articles
         chapters = [
             {
@@ -208,10 +276,29 @@ class StructuralParser:
             for m in CHAPTER_EN_HEADING.finditer(text)
         ]
 
+        mode = "article"
         article_matches = list(ARTICLE_EN_HEADING.finditer(text))
         if not article_matches:
-            # Try Section as fallback
             article_matches = list(SECTION_EN_HEADING.finditer(text))
+            mode = "section"
+        if not article_matches:
+            # Tertiary fallback: Roman-numeral sections. Filter to real Roman
+            # numerals (I..XX) to avoid accidentally matching e.g. random "D."
+            # or the letter "I" used as a pronoun.
+            roman_matches = [
+                m for m in ROMAN_SECTION_HEADING.finditer(text)
+                if m.group(1).upper() in _VALID_ROMANS
+            ]
+            # Require at least 2 Roman-numeral sections in increasing order to
+            # confidently conclude this is the document's structure. A single
+            # "I." could be a list marker; a sequence I/II/III is a structure.
+            if len(roman_matches) >= 2:
+                ordinals = [_roman_to_int(m.group(1)) for m in roman_matches]
+                # Check that at least half are ordered — tolerant of noise
+                pairs = sum(1 for a, b in zip(ordinals, ordinals[1:]) if a < b)
+                if pairs >= len(ordinals) // 2:
+                    article_matches = roman_matches
+                    mode = "roman"
 
         if not article_matches:
             return []
@@ -228,14 +315,17 @@ class StructuralParser:
                     break
 
             raw_block = text[m.end():end].strip()
-            title_line = (m.group(2) or "").strip()
 
-            # Split title line from body
-            if "\n" in raw_block:
-                # title might continue, but usually body starts after newline
-                body = raw_block
+            if mode == "roman":
+                # For Roman-numeral sections, group(2) is the FULL title/first
+                # sentence, not an optional delimiter+title. Keep as-is.
+                title_line = (m.group(2) or "").strip()
+                number = str(_roman_to_int(m.group(1)))
             else:
-                body = raw_block
+                title_line = (m.group(2) or "").strip()
+                number = m.group(1)
+
+            body = raw_block  # title might continue on next line, body = raw
 
             # Find parent chapter
             parent_chapter = None
@@ -244,7 +334,7 @@ class StructuralParser:
                     parent_chapter = ch
 
             articles.append({
-                "number": m.group(1),
+                "number": number,
                 "title": title_line,
                 "content": body,
                 "chapter_number": parent_chapter["number"] if parent_chapter else None,
