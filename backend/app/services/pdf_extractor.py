@@ -285,7 +285,15 @@ class PDFExtractor:
     # ══════════════════════════════════════════════════════
 
     def _finalize(self, result: dict) -> dict:
-        """Detect language + extract tables."""
+        """Normalize Arabic + detect language."""
+        from app.services.arabic_normalizer import normalize_arabic
+
+        # Normalize text on every page — fixes Arabic Presentation Forms,
+        # removes tatweel/kashida, applies NFKC+NFC.
+        for page in result.get("pages", []):
+            if page.get("text"):
+                page["text"] = normalize_arabic(page["text"])
+
         all_text = " ".join(p.get("text", "") for p in result.get("pages", []))
         result["language"] = self._detect_language(all_text)
         return result

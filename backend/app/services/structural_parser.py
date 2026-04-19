@@ -332,8 +332,24 @@ class StructuralParser:
 
     # ─── Bilingual alignment ───
 
+    def _normalize_article_content(self, articles: list) -> list:
+        """Run Arabic normalization on article titles + content."""
+        from app.services.arabic_normalizer import normalize_arabic
+
+        for a in articles:
+            if a.get("title"):
+                a["title"] = normalize_arabic(a["title"])
+            if a.get("content"):
+                a["content"] = normalize_arabic(a["content"])
+            if a.get("chapter_title"):
+                a["chapter_title"] = normalize_arabic(a["chapter_title"])
+        return articles
+
     def _align_bilingual(self, ar_articles: list, en_articles: list) -> list[dict]:
         """Align Arabic and English articles by article number."""
+        # Normalize Arabic before alignment
+        ar_articles = self._normalize_article_content(ar_articles)
+
         if not ar_articles and not en_articles:
             return []
 

@@ -369,6 +369,67 @@ export default function AdminDocumentDetailPage() {
               if (articleSearch.trim() && matchedArticles.length === 0) {
                 return null;
               }
+              // If no chapter structure (no number AND no title), render articles flat
+              const hasChapter =
+                ch.chapter_number || ch.chapter_title_en || ch.chapter_title_ar;
+
+              if (!hasChapter) {
+                return (
+                  <div
+                    key={key}
+                    className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100"
+                  >
+                    {matchedArticles.map((a) => {
+                      const titleEn = a.article_title_en || "";
+                      const titleAr = a.article_title_ar || "";
+                      const hasCid =
+                        titleEn.includes("(cid:") || titleAr.includes("(cid:");
+                      const quality = hasCid ? "warn" : "ok";
+                      return (
+                        <button
+                          key={a.id}
+                          onClick={async () => {
+                            try {
+                              const { data } = await api.get(
+                                `/documents/${docId}/articles/${a.article_index}`,
+                              );
+                              setSelectedArticle(data);
+                            } catch {
+                              // silent
+                            }
+                          }}
+                          className="w-full px-4 py-3 text-sm text-start hover:bg-blue-50 transition"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-gray-700 flex items-center gap-1.5">
+                              {quality === "ok" ? (
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500" title="Extraction OK" />
+                              ) : (
+                                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" title="Extraction warning" />
+                              )}
+                              {a.article_number
+                                ? `Article ${a.article_number}`
+                                : "Article"}
+                              {articleLang !== "ar" &&
+                                a.article_title_en &&
+                                `: ${a.article_title_en}`}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              pp. {a.page_start}–{a.page_end}
+                            </span>
+                          </div>
+                          {articleLang !== "en" && a.article_title_ar && (
+                            <p className="text-xs text-gray-500 font-arabic mt-0.5">
+                              {a.article_title_ar}
+                            </p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              }
+
               return (
                 <div
                   key={key}
@@ -395,7 +456,7 @@ export default function AdminDocumentDetailPage() {
                           : ""}
                         {ch.chapter_title_en ||
                           ch.chapter_title_ar ||
-                          "(untitled chapter)"}
+                          "Chapter"}
                       </p>
                       {ch.chapter_title_ar && ch.chapter_title_en && (
                         <p className="text-xs text-gray-500 font-arabic">
