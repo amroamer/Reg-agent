@@ -22,9 +22,11 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import BulkUploadModal from "@/components/documents/BulkUploadModal";
 import DeleteConfirmModal from "@/components/documents/DeleteConfirmModal";
 import EditMetadataModal from "@/components/documents/EditMetadataModal";
 import StatusCell from "@/components/documents/StatusCell";
+import UploadSlideOver from "@/components/documents/UploadSlideOver";
 import SourceBadge from "@/components/search/SourceBadge";
 import { useToast } from "@/hooks/useToast";
 import { useProcessingPoll } from "@/hooks/useProcessingPoll";
@@ -94,6 +96,8 @@ export default function AdminLibraryPage() {
   const [deleteDoc, setDeleteDoc] = useState<Document | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Debounce search
@@ -299,12 +303,12 @@ export default function AdminLibraryPage() {
         <p className="text-sm text-gray-400 mt-1">
           Upload SAMA regulations, CMA regulations, or bank policies to start.
         </p>
-        <Link
-          href="/admin/upload"
+        <button
+          onClick={() => setUploadOpen(true)}
           className="inline-flex items-center gap-1 mt-4 px-4 py-2 text-sm bg-kpmg-blue text-white rounded-lg hover:bg-kpmg-blue-dark"
         >
           <Plus className="w-4 h-4" /> Upload Document
-        </Link>
+        </button>
       </div>
     );
   };
@@ -320,18 +324,18 @@ export default function AdminLibraryPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Link
-            href="/admin/bulk-upload"
+          <button
+            onClick={() => setBulkUploadOpen(true)}
             className="flex items-center gap-1 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
           >
             <Upload className="w-4 h-4" /> Bulk Upload
-          </Link>
-          <Link
-            href="/admin/upload"
+          </button>
+          <button
+            onClick={() => setUploadOpen(true)}
             className="flex items-center gap-1 px-4 py-2 bg-kpmg-blue text-white rounded-lg text-sm font-medium hover:bg-kpmg-blue-dark"
           >
-            <Plus className="w-4 h-4" /> Upload Document
-          </Link>
+            <Plus className="w-4 h-4" /> Upload
+          </button>
         </div>
       </div>
 
@@ -821,6 +825,23 @@ export default function AdminLibraryPage() {
           </div>
         </div>
       )}
+
+      {/* Upload modals */}
+      <UploadSlideOver
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onCompleted={() => {
+          fetchDocs();
+          toast.notify("success", "Document uploaded successfully");
+        }}
+      />
+      <BulkUploadModal
+        open={bulkUploadOpen}
+        onClose={() => setBulkUploadOpen(false)}
+        onCompleted={() => {
+          fetchDocs();
+        }}
+      />
     </div>
   );
 }
