@@ -44,6 +44,24 @@ function highlightTerm(text: string, term: string): React.ReactNode[] {
   );
 }
 
+// Strip the retrieval context header "[SOURCE | Doc | Article N: Title]\n\n"
+// that the backend chunker embeds at the start of each chunk. Defensive in
+// case the backend ships a pre-fix response (e.g. from cache).
+const HEADER_RE = /^\s*\[[^\]\n]{1,400}\]\s*\n*/;
+function stripHeader(text: string): string {
+  return text.replace(HEADER_RE, "").replace(/^\s+/, "");
+}
+
+function formatArticleLabel(n: string | null | undefined): string | null {
+  if (!n) return null;
+  const trimmed = String(n).trim();
+  if (!trimmed) return null;
+  // If it already starts with a word (Article/المادة/etc.) leave it alone,
+  // otherwise prefix with "Article".
+  if (/^[A-Za-z\u0600-\u06FF]/.test(trimmed)) return trimmed;
+  return `Article ${trimmed}`;
+}
+
 function MatchRow({
   match,
   queryTerm,
@@ -53,34 +71,50 @@ function MatchRow({
   queryTerm: string;
   expanded?: boolean;
 }) {
-  const content = match.content_en || match.content_ar || "";
-  const maxLen = expanded ? content.length : 300;
+  const rawContent = match.content_en || match.content_ar || "";
+  const content = stripHeader(rawContent);
+  const maxLen = expanded ? content.length : 320;
   const snippet = content.slice(0, maxLen);
+
+  const articleLabel = formatArticleLabel(match.article_number);
+  // Prefer explicit article title, then section title, then chapter title
+  const subTitle =
+    match.article_title_en ||
+    match.article_title_ar ||
+    match.section_title ||
+    match.chapter_title_en ||
+    match.chapter_title_ar ||
+    null;
+
+  const hasMeta = Boolean(articleLabel || subTitle || match.page_number);
 
   return (
     <div className="pt-4">
-      <p className="text-[12px] font-mono text-ink-muted mb-2">
-        {match.article_number && (
-          <>
-            <span className="text-ink">{match.article_number}</span>
-          </>
-        )}
-        {match.section_title && (
-          <>
-            <span className="mx-1">·</span>
-            <span>{match.section_title}</span>
-          </>
-        )}
-        {match.page_number && (
-          <>
-            <span className="mx-1">·</span>
-            <span>p.{match.page_number}</span>
-          </>
-        )}
-      </p>
-      <p className="text-[14px] leading-relaxed text-ink" dir="auto">
+      {hasMeta && (
+        <p className="text-[12px] font-mono text-ink-muted mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {articleLabel && (
+            <span className="text-ink font-semibold">{articleLabel}</span>
+          )}
+          {subTitle && (
+            <>
+              {articleLabel && <span className="text-ink-muted">·</span>}
+              <span className="text-ink-soft">§ {subTitle}</span>
+            </>
+          )}
+          {match.page_number && (
+            <>
+              {(articleLabel || subTitle) && <span className="text-ink-muted">·</span>}
+              <span>p.{match.page_number}</span>
+            </>
+          )}
+        </p>
+      )}
+      <p
+        className="text-[14px] leading-relaxed text-ink"
+        dir="auto"
+      >
         &ldquo;{highlightTerm(snippet, queryTerm)}
-        {maxLen < content.length && "..."}&rdquo;
+        {maxLen < content.length && "…"}&rdquo;
       </p>
       <div className="flex items-center gap-4 mt-3 text-[11px] text-ink-muted">
         <Link
@@ -92,7 +126,13 @@ function MatchRow({
         </Link>
         <button
           onClick={() => {
-            const cite = `${match.document_number || ""} · ${match.article_number || ""}`;
+            const cite = [
+              match.document_number,
+              articleLabel,
+              subTitle,
+            ]
+              .filter(Boolean)
+              .join(" · ");
             navigator.clipboard.writeText(cite);
           }}
           className="flex items-center gap-1 hover:text-ink"

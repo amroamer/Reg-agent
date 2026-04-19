@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -7,10 +8,22 @@ from langdetect import detect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.article import Article
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services import embedding_service, qdrant_service
 from app.services.cache_service import get_cached_search, set_cached_search
+
+# Strips the retrieval context header that article_chunker prepends to each
+# chunk (e.g. "[SAMA | SAMA Credit Card Rules 2024 | Article 7: Disclosure Requirements]\n\n")
+_CHUNK_HEADER_RE = re.compile(r"^\s*\[[^\]\n]{1,400}\]\s*\n*", re.UNICODE)
+
+
+def _strip_chunk_header(text: str | None) -> str | None:
+    """Remove the leading [SOURCE | Title | Article N: Title] header from a chunk."""
+    if not text:
+        return text
+    return _CHUNK_HEADER_RE.sub("", text, count=1).lstrip()
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +241,7 @@ async def _enrich_results(
     # Fetch chunk content (by Chunk.id OR Chunk.qdrant_point_id)
     from sqlalchemy import select, or_
     chunk_map: dict[str, Chunk] = {}
+    article_ids: set[uuid.UUID] = set()
     if chunk_ids:
         chunk_uuids = []
         for c in chunk_ids:
@@ -247,6 +261,16 @@ async def _enrich_results(
             chunk_map[str(c.id)] = c
             if c.qdrant_point_id:
                 chunk_map[c.qdrant_point_id] = c
+            if c.article_id:
+                article_ids.add(c.article_id)
+
+    # Fetch article metadata (chapter + article titles for the retrieved chunks)
+    article_map: dict[str, Article] = {}
+    if article_ids:
+        article_stmt = select(Article).where(Article.id.in_(article_ids))
+        article_result = await db.execute(article_stmt)
+        for a in article_result.scalars():
+            article_map[str(a.id)] = a
 
     # Enrich each result
     enriched = []
@@ -273,6 +297,9 @@ async def _enrich_results(
         if chunk_key is None:
             # No DB match — fall back to whatever key we have (for output only)
             chunk_key = next((k for k in candidate_keys if k), None)
+
+        # Resolve article (for chapter/article title metadata)
+        article = article_map.get(str(chunk.article_id)) if (chunk and chunk.article_id) else None
 
         # Prefer chunk data (from DB) over whatever was in the result dict
         if chunk:
@@ -301,11 +328,20 @@ async def _enrich_results(
                 or r.get("page_number")
             )
 
+        # Strip the retrieval header the chunker prepends; the UI renders clean prose
+        content_en = _strip_chunk_header(content_en)
+        content_ar = _strip_chunk_header(content_ar)
+
         enriched.append({
             "chunk_id": str(chunk.id) if chunk else chunk_key,
             "document_id": doc_id,
             "score": r.get("rrf_score", r.get("score", 0)),
             "article_number": article_number,
+            "article_title_en": article.article_title_en if article else None,
+            "article_title_ar": article.article_title_ar if article else None,
+            "chapter_number": article.chapter_number if article else None,
+            "chapter_title_en": article.chapter_title_en if article else None,
+            "chapter_title_ar": article.chapter_title_ar if article else None,
             "section_title": section_title,
             "page_number": page_number,
             "content_en": content_en,

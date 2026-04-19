@@ -173,6 +173,11 @@ export interface SearchResultItem {
   document_id: string | null;
   score: number;
   article_number: string | null;
+  article_title_en: string | null;
+  article_title_ar: string | null;
+  chapter_number: string | null;
+  chapter_title_en: string | null;
+  chapter_title_ar: string | null;
   section_title: string | null;
   page_number: number | null;
   content_en: string | null;

@@ -20,6 +20,11 @@ class SearchResultItem(BaseModel):
     document_id: str | None = None
     score: float = 0
     article_number: str | None = None
+    article_title_en: str | None = None
+    article_title_ar: str | None = None
+    chapter_number: str | None = None
+    chapter_title_en: str | None = None
+    chapter_title_ar: str | None = None
     section_title: str | None = None
     page_number: int | None = None
     content_en: str | None = None
